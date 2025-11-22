@@ -141,8 +141,11 @@ Each subject folder must contain:
 | `--search_string` | str | None | Glob pattern to find subject folders (e.g., `'./sub-*/*.nii.gz'`) |
 | `--num_python_jobs` | int | 4 | Number of parallel Python processes |
 | `--num_itk_cores` | int | 1 | ITK threads per process (total parallelism = jobs × cores) |
+| `--template_path` | str | None | Path to template image (e.g., `MNI152_T1_2mm.nii.gz`). Mask must exist as `{template}_mask.nii.gz` |
 
-**Note**: Provide either `--list_path` OR `--search_string`, not both.
+**Notes**:
+- Provide either `--list_path` OR `--search_string`, not both
+- If `--template_path` is not provided, uses hardcoded default path
 
 #### Numba-Specific Arguments (r2m2_numba.py only)
 
@@ -199,6 +202,17 @@ python r2m2_numba.py --search_string './sub-*/registered.nii.gz' \
                      --radius 5 \
                      --num_python_jobs 8 \
                      --num_itk_cores 1
+```
+
+#### Custom template
+
+```bash
+# Use custom template image
+python r2m2_numba.py --list_path subjects.txt \
+                     --template_path /path/to/custom_template.nii.gz \
+                     --num_python_jobs 4
+
+# Note: Template mask must exist as /path/to/custom_template_mask.nii.gz
 ```
 
 #### Use as Python module

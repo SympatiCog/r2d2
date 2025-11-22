@@ -315,6 +315,14 @@ def get_args():
         help="The number of cores that ITK can use in each python job; default=1",
     )
 
+    parser.add_argument(
+        "--template_path",
+        dest="template_path",
+        default=None,
+        type=str,
+        help="Path to template image file (e.g., MNI152_T1_2mm.nii.gz). Template mask must exist as {template}_mask.nii.gz",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -341,8 +349,16 @@ if __name__ == "__main__":
         import sys
         sys.exit(1)
 
-    with Pool(args.num_python_jobs) as pool:
-        res = pool.map(main, flist)
+    # Create wrapper function to pass template_path if provided
+    if args.template_path:
+        def main_wrapper(sub_folder):
+            return main(sub_folder, template_path=args.template_path)
+
+        with Pool(args.num_python_jobs) as pool:
+            res = pool.map(main_wrapper, flist)
+    else:
+        with Pool(args.num_python_jobs) as pool:
+            res = pool.map(main, flist)
 
     dict_data = [r for r in res if type(r) is dict]
     err_data = [r for r in res if type(r) is not dict]

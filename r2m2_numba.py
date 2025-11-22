@@ -571,6 +571,14 @@ def get_args():
         help="ROI radius for similarity computation; default=3",
     )
 
+    parser.add_argument(
+        "--template_path",
+        dest="template_path",
+        default=None,
+        type=str,
+        help="Path to template image file (e.g., MNI152_T1_2mm.nii.gz). Template mask must exist as {template}_mask.nii.gz",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -617,15 +625,19 @@ if __name__ == "__main__":
     print(f"Parallel jobs: {args.num_python_jobs}")
     print(f"ITK cores per job: {args.num_itk_cores}")
     print(f"Radius: {args.radius}")
+    if args.template_path:
+        print(f"Template: {args.template_path}")
     print(f"{'='*70}\n")
 
     # Create wrapper function with fixed parameters
     def main_wrapper(sub_folder):
-        return main(
-            sub_folder,
-            radius=args.radius,
-            use_numba_mi=args.use_numba_mi
-        )
+        kwargs = {
+            'radius': args.radius,
+            'use_numba_mi': args.use_numba_mi
+        }
+        if args.template_path:
+            kwargs['template_path'] = args.template_path
+        return main(sub_folder, **kwargs)
 
     with Pool(args.num_python_jobs) as pool:
         res = pool.map(main_wrapper, flist)
