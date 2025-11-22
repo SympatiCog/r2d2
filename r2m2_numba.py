@@ -16,32 +16,41 @@ import numpy as np
 import numba
 from numba import jit, prange
 
-# Check for ANTs availability
-try:
-    import ants
-except ImportError:
-    print("\n" + "=" * 70)
-    print("ERROR: ANTs (ANTsPy) is not installed")
-    print("=" * 70)
-    print("\nANTs is required for R2M2 image processing operations.")
-    print("\nInstallation instructions:")
-    print("\n1. Using pip (recommended):")
-    print("   pip install antspyx")
-    print("\n2. Using conda:")
-    print("   conda install -c conda-forge antspyx")
-    print("\n3. From source (advanced):")
-    print("   git clone https://github.com/ANTsX/ANTsPy")
-    print("   cd ANTsPy")
-    print("   pip install .")
-    print("\nNote: ANTsPy installation may take 10-20 minutes as it compiles")
-    print("C++ code. Make sure you have a C++ compiler installed:")
-    print("  - macOS: Install Xcode Command Line Tools")
-    print("  - Linux: Install build-essential or equivalent")
-    print("  - Windows: Install Visual Studio Build Tools")
-    print("\nFor more information, visit:")
-    print("  https://github.com/ANTsX/ANTsPy")
-    print("=" * 70 + "\n")
-    sys.exit(1)
+# Lazy import for ANTs - only check when actually running (not for --help)
+ants = None
+
+def _check_ants():
+    """Check if ANTs is available and import it."""
+    global ants
+    if ants is not None:
+        return
+
+    try:
+        import ants as ants_module
+        ants = ants_module
+    except ImportError:
+        print("\n" + "=" * 70)
+        print("ERROR: ANTs (ANTsPy) is not installed")
+        print("=" * 70)
+        print("\nANTs is required for R2M2 image processing operations.")
+        print("\nInstallation instructions:")
+        print("\n1. Using pip (recommended):")
+        print("   pip install antspyx")
+        print("\n2. Using conda:")
+        print("   conda install -c conda-forge antspyx")
+        print("\n3. From source (advanced):")
+        print("   git clone https://github.com/ANTsX/ANTsPy")
+        print("   cd ANTsPy")
+        print("   pip install .")
+        print("\nNote: ANTsPy installation may take 10-20 minutes as it compiles")
+        print("C++ code. Make sure you have a C++ compiler installed:")
+        print("  - macOS: Install Xcode Command Line Tools")
+        print("  - Linux: Install build-essential or equivalent")
+        print("  - Windows: Install Visual Studio Build Tools")
+        print("\nFor more information, visit:")
+        print("  https://github.com/ANTsX/ANTsPy")
+        print("=" * 70 + "\n")
+        sys.exit(1)
 
 
 @jit(nopython=True, fastmath=True)
@@ -360,3 +369,285 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
             print(f"    Processed {idx}/{len(masked_coords)} masked voxels for MI")
 
     return MI_arr, dm_MI_arr
+
+
+# ============================================================================
+# Command-line interface (mirrors r2m2_base.py structure)
+# ============================================================================
+
+def load_images(reg_image: str, template_path: str) -> dict:
+    """
+    Load images from a sub-folder.
+
+    Args:
+        reg_image: full path to the registered image
+        template_path: full path to the template image
+
+    Returns:
+        image_dict containing the registered image, template and mask
+    """
+    import os
+    image_dict = {}
+
+    # Validate input files exist
+    if not os.path.exists(reg_image):
+        raise FileNotFoundError(f"Registered image not found: {reg_image}")
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"Template image not found: {template_path}")
+
+    # Construct mask path
+    mask_path = f"{template_path.split('.')[0]}_mask.nii.gz"
+    if not os.path.exists(mask_path):
+        raise FileNotFoundError(f"Template mask not found: {mask_path}")
+
+    image_dict["reg_image"] = ants.image_read(reg_image)
+    image_dict["template_image"] = ants.image_read(template_path)
+    image_dict["template_mask"] = ants.image_read(mask_path)
+    return image_dict
+
+
+def save_images(sub_fldr: str, image_res: dict, radius: float):
+    """
+    Save images to a sub-folder.
+
+    Args:
+        sub_fldr: full path to destination folder
+        image_res: dictionary containing the r2m2 images
+        radius: radius value for filename
+    """
+    import os
+    # Ensure target directory exists before writing files
+    os.makedirs(sub_fldr, exist_ok=True)
+    print(f"Saving:")
+    for k, v in image_res.items():
+        outpath = os.path.join(sub_fldr, f"r2m2_{k}_rad{radius}.nii")
+        print(f"  {outpath}")
+        ants.image_write(v, outpath)
+
+
+def comp_stats(
+    r2m2: dict,
+    img_dict: dict,
+    metrics=["MattesMutualInformation", "MeanSquares", "Correlation"],
+) -> dict:
+    """
+    Compute basic summary stats on images.
+
+    Args:
+        r2m2: dictionary containing the r2m2 images
+        img_dict: dictionary containing template and registered images
+        metrics: list of similarity metrics to compute on whole brain
+
+    Returns:
+        dictionary containing the computed stats
+    """
+    mask = img_dict.get("template_mask")
+    template = img_dict.get("template_image")
+    reg_image = img_dict.get("reg_image")
+    summary_stats = {}
+
+    try:
+        for k, v in r2m2.items():
+            summary_stats[f"{k}_mean"] = v[mask > 0].mean()
+            summary_stats[f"{k}_std"] = v[mask > 0].std()
+            summary_stats[f"{k}_z"] = (
+                summary_stats[f"{k}_mean"] / summary_stats[f"{k}_std"]
+            )
+
+        for metric in metrics:
+            summary_stats[f"{metric}_wholebrain"] = ants.image_similarity(
+                template,
+                reg_image,
+                metric_type=metric,
+            )
+    except:
+        for k, v in r2m2.items():
+            summary_stats[f"{k}_mean"] = np.nan
+            summary_stats[f"{k}_std"] = np.nan
+            summary_stats[f"{k}_z"] = np.nan
+
+        for metric in metrics:
+            summary_stats[f"{metric}_wholebrain"] = np.nan
+
+    return summary_stats
+
+
+def main(
+    sub_folder: str,
+    reg_image_name: str = "registered_t2_img.nii.gz",
+    template_path: str = "/Users/stan/Projects/R2M2_processing/data/external/mean_space_2mm_brain.nii.gz",
+    radius: int = 3,
+    use_numba_mi: bool = False,
+) -> dict:
+    """
+    Main processing function for a single subject.
+
+    Args:
+        sub_folder: path to subject folder
+        reg_image_name: name of the registered image file
+        template_path: path to the template image
+        radius: ROI radius for R2M2 computation
+        use_numba_mi: if True, use Numba approximate MI; if False, use ANTs MI
+
+    Returns:
+        Dictionary with subject statistics, or Exception on failure
+    """
+    import os
+    print(sub_folder)
+    img_dict = load_images(
+        reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
+    )
+    subsess = sub_folder.split("/")[-1]
+
+    # Use Numba-accelerated version
+    r2m2 = compute_r2m2_numba(
+        img_dict, radius=radius, subsess=subsess, use_numba_mi=use_numba_mi
+    )
+
+    if type(r2m2) is dict:
+        save_images(sub_folder, r2m2, radius)
+        res = {"subsess": subsess}
+        comp_vals = comp_stats(r2m2, img_dict)
+        res.update(comp_vals)
+        return res
+    else:
+        print(f"{subsess} failed in main()")
+        return r2m2
+
+
+def get_args():
+    """Parse command-line arguments."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Compute Regional Registration Mismatch Metrics (Numba-accelerated version).",
+        epilog="This is the high-performance Numba implementation providing 10-50x speedup over r2m2_base.py"
+    )
+
+    parser.add_argument(
+        "--list_path",
+        dest="list_path",
+        required=False,
+        help="full path to text file list of subject folders",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--search_string",
+        dest="search_string",
+        required=False,
+        help="glob-able search string for target images, e.g. './sub-*/registered_space_imgs.nii.gz'",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--num_python_jobs",
+        dest="num_python_jobs",
+        default=4,
+        type=int,
+        help="The number of python jobs to spawn to use; default=4",
+    )
+
+    parser.add_argument(
+        "--num_itk_cores",
+        dest="num_itk_cores",
+        default="1",
+        type=str,
+        help="The number of cores that ITK can use in each python job; default=1",
+    )
+
+    parser.add_argument(
+        "--use-numba-mi",
+        dest="use_numba_mi",
+        action="store_true",
+        help="Use Numba's approximate MI (faster but less accurate). Default: use ANTs MI (hybrid mode)",
+    )
+
+    parser.add_argument(
+        "--radius",
+        dest="radius",
+        default=3,
+        type=int,
+        help="ROI radius for similarity computation; default=3",
+    )
+
+    args = parser.parse_args()
+    return args
+
+
+# Run as main, distribute across num_python_jobs processes
+if __name__ == "__main__":
+    import os
+    import glob
+
+    args = get_args()
+
+    # Check for ANTs after argument parsing (allows --help to work without ANTs)
+    _check_ants()
+
+    # Import heavy dependencies after help/args are processed
+    import pandas as pd
+    from multiprocess import Pool
+
+    os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = args.num_itk_cores
+
+    if args.list_path is not None:
+        with open(args.list_path, "r") as f:
+            flist = f.read()
+        flist = [fil.strip() for fil in flist.split()]
+    elif args.search_string is not None:
+        flist = glob.glob(args.search_string)
+        flist = [os.path.split(f)[0] for f in flist]
+    else:
+        print("\nError: You must provide either --list_path or --search_string\n")
+        print("Examples:")
+        print("  python r2m2_numba.py --list_path subjects.txt")
+        print("  python r2m2_numba.py --search_string './sub-*/registered_t2_img.nii.gz'")
+        print("\nOptional flags:")
+        print("  --use-numba-mi         Use fast approximate MI (default: use ANTs MI)")
+        print("  --radius N             Set ROI radius (default: 3)")
+        print("  --num_python_jobs N    Number of parallel processes (default: 4)\n")
+        sys.exit(1)
+
+    print(f"\n{'='*70}")
+    print(f"R2M2 Numba-Accelerated Processing")
+    print(f"{'='*70}")
+    print(f"Mode: {'Full Numba (approximate MI)' if args.use_numba_mi else 'Hybrid (ANTs MI + Numba MSE/CORR)'}")
+    print(f"Subjects: {len(flist)}")
+    print(f"Parallel jobs: {args.num_python_jobs}")
+    print(f"ITK cores per job: {args.num_itk_cores}")
+    print(f"Radius: {args.radius}")
+    print(f"{'='*70}\n")
+
+    # Create wrapper function with fixed parameters
+    def main_wrapper(sub_folder):
+        return main(
+            sub_folder,
+            radius=args.radius,
+            use_numba_mi=args.use_numba_mi
+        )
+
+    with Pool(args.num_python_jobs) as pool:
+        res = pool.map(main_wrapper, flist)
+
+    dict_data = [r for r in res if type(r) is dict]
+    err_data = [r for r in res if type(r) is not dict]
+
+    dat = pd.DataFrame(dict_data)
+    ts = pd.Timestamp("now")
+    tstr = ts.strftime("%Y_%m_%d-%X")
+    output_csv = f"r2m2_numba_summary_stats_{tstr}.csv"
+    dat.to_csv(output_csv, index=False)
+
+    error_log = f"r2m2_numba_errs_{tstr}.txt"
+    with open(error_log, "w") as f:
+        f.write(str(err_data))
+
+    print(f"\n{'='*70}")
+    print(f"Processing Complete")
+    print(f"{'='*70}")
+    print(f"Successful subjects: {len(dict_data)}")
+    print(f"Failed subjects: {len(err_data)}")
+    print(f"Summary statistics: {output_csv}")
+    print(f"Error log: {error_log}")
+    print(f"{'='*70}\n")
