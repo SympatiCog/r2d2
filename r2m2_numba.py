@@ -98,8 +98,7 @@ def compute_mutual_information_approx(arr1, arr2, bins=32):
     """
     Compute approximate Mutual Information using histogram-based method.
 
-    This is a simplified approximation of MattesMutualInformation.
-    For production use, consider using the ANTs implementation for accuracy.
+    Note: This is a simplified approximation of MattesMutualInformation.
 
     Args:
         arr1, arr2: Input arrays
