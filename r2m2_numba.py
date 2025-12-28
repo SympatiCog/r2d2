@@ -15,6 +15,7 @@ import sys
 import numpy as np
 import numba
 from numba import jit, prange
+import re
 
 # Lazy import for ANTs - only check when actually running (not for --help)
 ants = None
@@ -343,26 +344,32 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
     masked_coords = np.argwhere(mask_arr == 1)
 
     for idx, (x, y, z) in enumerate(masked_coords):
-        # Compute ROI bounds
         lower = [max(0, x - radius), max(0, y - radius), max(0, z - radius)]
-        upper = [min(X, x + radius), min(Y, y + radius), min(Z, z + radius)]
+        # Use +1 to ensure the upper bound results in a large enough count for Python slicing
+        upper = [min(X, x + radius + 1), min(Y, y + radius + 1), min(Z, z + radius + 1)]
 
         # Crop ROIs
         roi_reg = ants.crop_indices(reg_image, lowerind=lower, upperind=upper)
         roi_tmplt = ants.crop_indices(template_image, lowerind=lower, upperind=upper)
 
-        # Compute MI
-        MI_arr[x, y, z] = ants.image_similarity(
-            roi_tmplt, roi_reg, metric_type="MattesMutualInformation"
-        )
+        try:
+            # Compute MI
+            MI_arr[x, y, z] = ants.image_similarity(
+                roi_tmplt, roi_reg, metric_type="MattesMutualInformation"
+            )
 
-        # Compute demeaned MI
-        dm_roi_reg = roi_reg - roi_reg.mean()
-        dm_roi_tmplt = roi_tmplt - roi_tmplt.mean()
+            # Compute demeaned MI
+            dm_roi_reg = roi_reg - roi_reg.mean()
+            dm_roi_tmplt = roi_tmplt - roi_tmplt.mean()
 
-        dm_MI_arr[x, y, z] = ants.image_similarity(
-            dm_roi_tmplt, dm_roi_reg, metric_type="MattesMutualInformation"
-        )
+            dm_MI_arr[x, y, z] = ants.image_similarity(
+                dm_roi_tmplt, dm_roi_reg, metric_type="MattesMutualInformation"
+            )
+            
+        except Exception:
+            # If a specific voxel still fails (e.g. ITK internal error), skip it 
+            # to prevent the entire multi-subject run from crashing.
+            continue
 
         # Progress indicator for long computations
         if idx % 5000 == 0 and idx > 0:
@@ -396,7 +403,8 @@ def load_images(reg_image: str, template_path: str) -> dict:
         raise FileNotFoundError(f"Template image not found: {template_path}")
 
     # Construct mask path
-    mask_path = f"{template_path.split('.')[0]}_mask.nii.gz"
+    stem, ext = template_path[:-7], template_path[-7:]
+    mask_path = f"{stem}_mask{ext}"
     if not os.path.exists(mask_path):
         raise FileNotFoundError(f"Template mask not found: {mask_path}")
 
@@ -404,7 +412,6 @@ def load_images(reg_image: str, template_path: str) -> dict:
     image_dict["template_image"] = ants.image_read(template_path)
     image_dict["template_mask"] = ants.image_read(mask_path)
     return image_dict
-
 
 def save_images(sub_fldr: str, image_res: dict, radius: float):
     """
@@ -473,7 +480,6 @@ def comp_stats(
 
 
 def main(
-    sub_folder: str,
     reg_image_name: str = "registered_t2_img.nii.gz",
     template_path: str = None,
     radius: int = 3,
@@ -497,11 +503,14 @@ def main(
     if template_path is None:
         raise ValueError("template_path is required. Please specify --template_path when running from command line.")
 
-    print(sub_folder)
+    sub_folder = os.path.dirname(reg_image_name)
+    reg_image_name = os.path.basename(reg_image_name)
     img_dict = load_images(
         reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
     )
-    subsess = sub_folder.split("/")[-1]
+    m = re.search(r'sub-([^/_]+)', sub_folder)
+    sub_id = m.group(0) if m else None
+    subsess = sub_id
 
     # Use Numba-accelerated version
     r2m2 = compute_r2m2_numba(
@@ -605,11 +614,13 @@ if __name__ == "__main__":
 
     if args.list_path is not None:
         with open(args.list_path, "r") as f:
-            flist = f.read()
-        flist = [fil.strip() for fil in flist.split()]
+            raw_data = f.read()
+        flist = [fil.strip() for fil in raw_data.split()]
+        num_files = len(flist)
     elif args.search_string is not None:
         flist = glob.glob(args.search_string)
-        flist = [os.path.split(f)[0] for f in flist]
+        # flist = [os.path.split(f)[0] for f in flist]
+        
     else:
         print("\nError: You must provide either --list_path or --search_string\n")
         print("Examples:")
