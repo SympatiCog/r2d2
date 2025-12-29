@@ -4,18 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-R2M2 (Regional Registration Mismatch Metric) is a neuroimaging tool that performs voxelwise assessment of registration quality between MRI images and template space. It computes similarity metrics in NxNxN neighborhoods around each voxel to identify regional registration problems.
+R2D2 (Regional Registration Mismatch Metric) is a neuroimaging tool that performs voxelwise assessment of registration quality between MRI images and template space. It computes similarity metrics in NxNxN neighborhoods around each voxel to identify regional registration problems.
 
 **Important**: This is a proof-of-concept implementation. The expensive triple-nested loop operations in native Python are intentionally not optimized for production use. Future versions will rewrite these in Julia, Numba, or similar performance-oriented frameworks.
 
 ## Core Architecture
 
-### Main Algorithm (`r2m2_base.py`)
+### Main Algorithm (`r2d2_base.py`)
 
 The codebase consists of a single module with the following pipeline:
 
 1. **Image Loading** (`load_images`): Loads registered image, template, and template mask
-2. **R2M2 Computation** (`compute_r2m2`): Triple-nested loop over all voxels (x, y, z)
+2. **R2D2 Computation** (`compute_r2d2`): Triple-nested loop over all voxels (x, y, z)
    - For each masked voxel, crops a local neighborhood (radius-based ROI)
    - Computes 6 similarity metrics between template and registered image:
      - MI, MSE, CORR (raw values)
@@ -37,9 +37,9 @@ Input: folder containing registered_t2_img.nii.gz
   ↓
 load_images() → {reg_image, template_image, template_mask}
   ↓
-compute_r2m2() → {MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR} images
+compute_r2d2() → {MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR} images
   ↓
-save_images() → r2m2_{metric}_rad{radius}.nii files
+save_images() → r2d2_{metric}_rad{radius}.nii files
   ↓
 comp_stats() → summary statistics dict
   ↓
@@ -52,12 +52,12 @@ Output: CSV with per-subject stats, error log
 
 ```bash
 # Using a list of subject folders
-python r2m2_base.py --list_path /path/to/subject_list.txt \
+python r2d2_base.py --list_path /path/to/subject_list.txt \
                     --num_python_jobs 4 \
                     --num_itk_cores 1
 
 # Using glob pattern to find subject folders
-python r2m2_base.py --search_string './sub-*/registered_space_imgs.nii.gz' \
+python r2d2_base.py --search_string './sub-*/registered_space_imgs.nii.gz' \
                     --num_python_jobs 4 \
                     --num_itk_cores 1
 ```
@@ -76,15 +76,15 @@ Each subject folder must contain:
 
 ### Outputs
 
-- Per-subject NIfTI files: `r2m2_{MI,MSE,CORR,dm_MI,dm_MSE,dm_CORR}_rad{radius}.nii`
-- Summary CSV: `r2m2_summary_stats_{timestamp}.csv`
-- Error log: `r2m2_errs_{timestamp}.txt`
+- Per-subject NIfTI files: `r2d2_{MI,MSE,CORR,dm_MI,dm_MSE,dm_CORR}_rad{radius}.nii`
+- Summary CSV: `r2d2_summary_stats_{timestamp}.csv`
+- Error log: `r2d2_errs_{timestamp}.txt`
 
 ## Important Implementation Notes
 
 ### Performance Bottleneck
 
-The `compute_r2m2` function contains a triple-nested loop iterating over all voxels. This is the primary computational bottleneck and is **intentionally unoptimized** as this is proof-of-concept code.
+The `compute_r2d2` function contains a triple-nested loop iterating over all voxels. This is the primary computational bottleneck and is **intentionally unoptimized** as this is proof-of-concept code.
 
 ### Error Handling
 
@@ -107,28 +107,28 @@ The default template path in `main()` is set to a local path (`/Users/stan/Proje
 pip install -r requirements-test.txt
 
 # Run all tests
-pytest test_r2m2_base.py -v
+pytest test_r2d2_base.py -v
 
 # Run with coverage report
-pytest test_r2m2_base.py -v --cov=r2m2_base --cov-report=html
+pytest test_r2d2_base.py -v --cov=r2d2_base --cov-report=html
 
 # Run specific test class
-pytest test_r2m2_base.py::TestROIFunctions -v
+pytest test_r2d2_base.py::TestROIFunctions -v
 
 # Run specific test
-pytest test_r2m2_base.py::TestROIFunctions::test_roi_min_vals_no_clipping -v
+pytest test_r2d2_base.py::TestROIFunctions::test_roi_min_vals_no_clipping -v
 ```
 
 ### Test Structure
 
-The test suite (`test_r2m2_base.py`) includes:
+The test suite (`test_r2d2_base.py`) includes:
 
 - **Unit Tests**:
   - `TestROIFunctions`: Tests for `roi_min_vals()` and `roi_max_vals()` boundary calculations
   - `TestLoadImages`: Tests for file validation and image loading
   - `TestSaveImages`: Tests for directory creation and file writing
   - `TestCompStats`: Tests for statistics computation and error handling
-  - `TestComputeR2M2`: Tests for main R2M2 computation logic
+  - `TestComputeR2D2`: Tests for main R2D2 computation logic
   - `TestMainFunction`: Tests for `main()` and `main_wrapper()` orchestration
   - `TestArgumentParsing`: Tests for command-line argument parsing
 

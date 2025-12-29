@@ -40,18 +40,18 @@ def roi_max_vals(x, y, z, radius=5, template_dims=None):
     return outvals
 
 
-def compute_r2m2(image_dict: dict, radius: float = 3, subsess: str = "unknown") -> dict:
+def compute_r2d2(image_dict: dict, radius: float = 3, subsess: str = "unknown") -> dict:
     """
     Ugly AF 3-deep loop; needs to be reimplemented
-    Compute the r2m2 from the template and the reg_img,
-    return image dict with r2m2 values.
+    Compute the r2d2 from the template and the reg_img,
+    return image dict with r2d2 values.
     Arguments:
         tmplt:   template image
         reg_img: image registered to the template
         mask:    the template image's mask
-        radius:  search radius to compute the r2m2 metrics
+        radius:  search radius to compute the r2d2 metrics
     Returns:
-        image dictionary with r2m2 values.
+        image dictionary with r2d2 values.
         Each of:
             MattesMutualInformation
             MeanSquares
@@ -121,7 +121,7 @@ def compute_r2m2(image_dict: dict, radius: float = 3, subsess: str = "unknown") 
                             pass
                     except Exception as e:
                         # Raise controlled RuntimeError for test compatibility
-                        raise RuntimeError("R2M2 computation failed") from e
+                        raise RuntimeError("R2D2 computation failed") from e
     
     results_dict = {
         "MI": MI,
@@ -166,13 +166,13 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
     Save images to a sub-folder.
 
     :param sub_fldr: full path to destination folder
-    :param image_res: dictionary containing the r2m2 images
+    :param image_res: dictionary containing the r2d2 images
     """
     # Ensure target directory exists before writing files
     os.makedirs(sub_fldr, exist_ok=True)
     print(f"Saving:")
     for k, v in image_res.items():
-        outpath = os.path.join(sub_fldr, f"r2m2_{k}_rad{radius}.nii")
+        outpath = os.path.join(sub_fldr, f"r2d2_{k}_rad{radius}.nii")
         print(f"  {outpath}")
         ants.image_write(v, outpath)
 
@@ -198,16 +198,16 @@ def main(
         reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
     )
     subsess = sub_folder.split("/")[-1]
-    r2m2 = compute_r2m2(img_dict, radius=radius, subsess=subsess)
-    if type(r2m2) is dict:
-        save_images(sub_folder, r2m2, radius)
+    r2d2 = compute_r2d2(img_dict, radius=radius, subsess=subsess)
+    if type(r2d2) is dict:
+        save_images(sub_folder, r2d2, radius)
         res = {"subsess": subsess}
-        comp_vals = comp_stats(r2m2, img_dict)
+        comp_vals = comp_stats(r2d2, img_dict)
         res.update(comp_vals)
         return res
     else:
         print(f"{subsess} failed in main()")
-        return r2m2
+        return r2d2
 
 
 def main_wrapper(
@@ -222,7 +222,7 @@ def main_wrapper(
     :param sub_folder: path to the folder
     :param reg_image_name: name of the registered image
     :param template_path: path to the template
-    :param radius: search radius for r2m2 computation
+    :param radius: search radius for r2d2 computation
     :return: dict with success/error information
     """
     subsess = sub_folder.split("/")[-1]
@@ -238,14 +238,14 @@ def main_wrapper(
 
 
 def comp_stats(
-    r2m2: dict,
+    r2d2: dict,
     img_dict: dict,
     metrics=["MattesMutualInformation", "MeanSquares", "Correlation"],
 ) -> dict:
     """
     Compute basic summary stats on images.
 
-    :param r2m2: dictionary containing the r2m2 images
+    :param r2d2: dictionary containing the r2d2 images
     :return: dictionary containing the computed stats.
     """
     mask = img_dict.get("template_mask")
@@ -255,7 +255,7 @@ def comp_stats(
     summary_stats = {}
 
     try:
-        for k, v in r2m2.items():
+        for k, v in r2d2.items():
             summary_stats[f"{k}_mean"] = v[mask > 0].mean()
             summary_stats[f"{k}_std"] = v[mask > 0].std()
             summary_stats[f"{k}_z"] = (
@@ -269,7 +269,7 @@ def comp_stats(
                 metric_type=metric,
             )
     except:
-        for k, v in r2m2.items():
+        for k, v in r2d2.items():
             summary_stats[f"{k}_mean"] = np.nan
             summary_stats[f"{k}_std"] = np.nan
             summary_stats[f"{k}_z"] = np.nan
@@ -347,8 +347,8 @@ if __name__ == "__main__":
     else:
         print("\nError: You must provide either --list_path or --search_string\n")
         print("Examples:")
-        print("  python r2m2_base.py --list_path subjects.txt")
-        print("  python r2m2_base.py --search_string './sub-*/registered_t2_img.nii.gz'\n")
+        print("  python r2d2_base.py --list_path subjects.txt")
+        print("  python r2d2_base.py --search_string './sub-*/registered_t2_img.nii.gz'\n")
         import sys
         sys.exit(1)
 
@@ -365,7 +365,7 @@ if __name__ == "__main__":
     dat = pd.DataFrame(dict_data)
     ts = pd.Timestamp("now")
     tstr = ts.strftime("%Y_%m_%d-%X")
-    dat.to_csv(f"r2m2_summary_stats_{tstr}.csv", index=False)
+    dat.to_csv(f"r2d2_summary_stats_{tstr}.csv", index=False)
 
-    with open(f"r2m2_errs_{tstr}.txt", "w") as f:
+    with open(f"r2d2_errs_{tstr}.txt", "w") as f:
         f.write(str(err_data))

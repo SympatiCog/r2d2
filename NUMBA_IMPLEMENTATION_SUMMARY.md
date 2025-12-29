@@ -2,18 +2,18 @@
 
 ## What Was Created
 
-I've developed a complete Numba-accelerated implementation of R2M2 with three new files:
+I've developed a complete Numba-accelerated implementation of R2D2 with three new files:
 
-### 1. `r2m2_numba.py` - Core Implementation
+### 1. `r2d2_numba.py` - Core Implementation
 
 The main Numba-accelerated module with:
 
-- **`compute_r2m2_kernel()`**: Numba JIT-compiled kernel with parallel execution
+- **`compute_r2d2_kernel()`**: Numba JIT-compiled kernel with parallel execution
   - Uses `@jit(nopython=True, parallel=True)` for maximum performance
   - Implements MSE, Correlation, and approximate MI in pure numpy
   - Parallelizes across the X dimension using `prange`
 
-- **`compute_r2m2_numba()`**: Drop-in replacement for `compute_r2m2()`
+- **`compute_r2d2_numba()`**: Drop-in replacement for `compute_r2d2()`
   - Same API as original function
   - Two modes: full Numba (`use_numba_mi=True`) or hybrid (`use_numba_mi=False`)
   - Returns ANTs images for compatibility
@@ -96,34 +96,34 @@ python benchmark_numba.py
 
 # Use in your code
 python
-from r2m2_numba import compute_r2m2_numba
+from r2d2_numba import compute_r2d2_numba
 
 # Fastest mode (approximate MI)
-results = compute_r2m2_numba(image_dict, radius=3, use_numba_mi=True)
+results = compute_r2d2_numba(image_dict, radius=3, use_numba_mi=True)
 
 # Recommended mode (ANTs MI for accuracy)
-results = compute_r2m2_numba(image_dict, radius=3, use_numba_mi=False)
+results = compute_r2d2_numba(image_dict, radius=3, use_numba_mi=False)
 ```
 
 ### Integration Options
 
 #### Option A: Minimal Change (Recommended)
 
-Add to `r2m2_base.py`:
+Add to `r2d2_base.py`:
 
 ```python
 # At top of file
 try:
-    from r2m2_numba import compute_r2m2_numba
+    from r2d2_numba import compute_r2d2_numba
     USE_NUMBA = True
 except ImportError:
     USE_NUMBA = False
 
-# In main() function, replace compute_r2m2() call:
+# In main() function, replace compute_r2d2() call:
 if USE_NUMBA:
-    r2m2 = compute_r2m2_numba(img_dict, radius=radius, subsess=subsess, use_numba_mi=False)
+    r2d2 = compute_r2d2_numba(img_dict, radius=radius, subsess=subsess, use_numba_mi=False)
 else:
-    r2m2 = compute_r2m2(img_dict, radius=radius, subsess=subsess)
+    r2d2 = compute_r2d2(img_dict, radius=radius, subsess=subsess)
 ```
 
 This provides automatic fallback if Numba isn't installed.
@@ -143,7 +143,7 @@ parser.add_argument(
 #### Option C: Environment Variable
 
 ```python
-USE_NUMBA = os.environ.get('R2M2_USE_NUMBA', 'true').lower() == 'true'
+USE_NUMBA = os.environ.get('R2D2_USE_NUMBA', 'true').lower() == 'true'
 ```
 
 ## Testing Status
@@ -181,12 +181,12 @@ For optimal performance, balance subject-level and voxel-level parallelism:
 
 # Option 1: Subject-level parallelism (better for many subjects)
 export NUMBA_NUM_THREADS=2
-python r2m2_base.py --list_path subjects.txt --num_python_jobs 4
+python r2d2_base.py --list_path subjects.txt --num_python_jobs 4
 # Total: 4 subjects × 2 threads = 8 cores
 
 # Option 2: Voxel-level parallelism (better for few subjects)
 export NUMBA_NUM_THREADS=8
-python r2m2_base.py --list_path subjects.txt --num_python_jobs 1
+python r2d2_base.py --list_path subjects.txt --num_python_jobs 1
 # Total: 1 subject × 8 threads = 8 cores
 ```
 

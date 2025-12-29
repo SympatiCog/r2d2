@@ -20,7 +20,7 @@ except ImportError:
     print("\n" + "=" * 70)
     print("ERROR: ANTs (ANTsPy) is not installed")
     print("=" * 70)
-    print("\nANTs is required for R2M2 testing.")
+    print("\nANTs is required for R2D2 testing.")
     print("\nInstallation instructions:")
     print("\n1. Using pip (recommended):")
     print("   pip install antspyx")
@@ -32,7 +32,7 @@ except ImportError:
     print("=" * 70 + "\n")
     sys.exit(1)
 
-from r2m2_numba import compute_r2m2_numba
+from r2d2_numba import compute_r2d2_numba
 
 
 def create_tiny_test_data():
@@ -66,7 +66,7 @@ def create_tiny_test_data():
 def test_numba_basic():
     """Test basic functionality."""
     print("=" * 60)
-    print("Quick Smoke Test for Numba R2M2 Implementation")
+    print("Quick Smoke Test for Numba R2D2 Implementation")
     print("=" * 60)
 
     print("\n1. Creating test data...")
@@ -76,7 +76,7 @@ def test_numba_basic():
 
     print("\n2. Testing Numba with approximate MI...")
     try:
-        results = compute_r2m2_numba(
+        results = compute_r2d2_numba(
             image_dict,
             radius=3,
             subsess="test",
@@ -117,7 +117,7 @@ def test_numba_basic():
 
     print("\n5. Testing hybrid mode (ANTs MI)...")
     try:
-        results_hybrid = compute_r2m2_numba(
+        results_hybrid = compute_r2d2_numba(
             image_dict,
             radius=3,
             subsess="test",

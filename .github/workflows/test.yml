@@ -33,7 +33,7 @@ jobs:
 
     - name: Run tests with pytest
       run: |
-        pytest test_r2m2_base.py -v --cov=r2m2_base --cov-report=xml --cov-report=term
+        pytest test_r2d2_base.py -v --cov=r2d2_base --cov-report=xml --cov-report=term
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3

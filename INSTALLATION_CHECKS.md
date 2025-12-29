@@ -1,4 +1,4 @@
-# Installation Checks Added to R2M2 Numba Implementation
+# Installation Checks Added to R2D2 Numba Implementation
 
 ## Summary
 
@@ -6,7 +6,7 @@ All Numba-related scripts now include startup checks that verify ANTs (ANTsPy) i
 
 ## Files Modified
 
-1. **r2m2_numba.py** - Core Numba implementation module
+1. **r2d2_numba.py** - Core Numba implementation module
 2. **benchmark_numba.py** - Performance benchmarking script
 3. **test_numba_quick.py** - Quick smoke test script
 
@@ -27,7 +27,7 @@ When any of these scripts are run without ANTs installed, they will:
 ERROR: ANTs (ANTsPy) is not installed
 ======================================================================
 
-ANTs is required for R2M2 image processing operations.
+ANTs is required for R2D2 image processing operations.
 
 Installation instructions:
 
@@ -82,7 +82,7 @@ All checks have been verified to work correctly:
 
 ```bash
 # Test module import
-python -c "from r2m2_numba import compute_r2m2_numba"
+python -c "from r2d2_numba import compute_r2d2_numba"
 # Exit code: 1, displays installation instructions
 
 # Test benchmark script

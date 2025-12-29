@@ -1,9 +1,9 @@
 """
-Benchmark script to compare original vs Numba-accelerated R2M2 implementation.
+Benchmark script to compare original vs Numba-accelerated R2D2 implementation.
 
 This script creates synthetic test data and compares:
-1. Original implementation (r2m2_base.compute_r2m2)
-2. Numba implementation with approximate MI (r2m2_numba.compute_r2m2_numba)
+1. Original implementation (r2d2_base.compute_r2d2)
+2. Numba implementation with approximate MI (r2d2_numba.compute_r2d2_numba)
 3. Hybrid implementation (Numba for MSE/CORR, ANTs for MI)
 
 Usage:
@@ -22,7 +22,7 @@ except ImportError:
     print("\n" + "=" * 70)
     print("ERROR: ANTs (ANTsPy) is not installed")
     print("=" * 70)
-    print("\nANTs is required for R2M2 benchmarking.")
+    print("\nANTs is required for R2D2 benchmarking.")
     print("\nInstallation instructions:")
     print("\n1. Using pip (recommended):")
     print("   pip install antspyx")
@@ -34,8 +34,8 @@ except ImportError:
     print("=" * 70 + "\n")
     sys.exit(1)
 
-from r2m2_base import compute_r2m2
-from r2m2_numba import compute_r2m2_numba
+from r2d2_base import compute_r2d2
+from r2d2_numba import compute_r2d2_numba
 
 
 def create_synthetic_test_data(shape=(91, 109, 91), noise_level=0.1):
@@ -150,7 +150,7 @@ def run_benchmark(radius=3, shape=(91, 109, 91), skip_mi=True):
     Run comprehensive benchmark comparing implementations.
 
     Args:
-        radius: ROI radius for R2M2 computation
+        radius: ROI radius for R2D2 computation
         shape: Image dimensions
         skip_mi: If True, skip MI computation in original (very slow)
 
@@ -158,7 +158,7 @@ def run_benchmark(radius=3, shape=(91, 109, 91), skip_mi=True):
         Dictionary with timing results
     """
     print("=" * 70)
-    print("R2M2 Performance Benchmark")
+    print("R2D2 Performance Benchmark")
     print("=" * 70)
 
     # Create test data
@@ -170,7 +170,7 @@ def run_benchmark(radius=3, shape=(91, 109, 91), skip_mi=True):
     print("\n" + "-" * 70)
     print("Warming up Numba JIT compiler...")
     print("-" * 70)
-    _ = compute_r2m2_numba(image_dict, radius=radius, use_numba_mi=True)
+    _ = compute_r2d2_numba(image_dict, radius=radius, use_numba_mi=True)
     print("  JIT compilation complete!")
 
     # Benchmark 1: Original implementation (without MI to save time)
@@ -179,7 +179,7 @@ def run_benchmark(radius=3, shape=(91, 109, 91), skip_mi=True):
         print("Benchmark 1: Original implementation (with MI)")
         print("-" * 70)
         start = time.time()
-        results_orig = compute_r2m2(image_dict, radius=radius, subsess="benchmark")
+        results_orig = compute_r2d2(image_dict, radius=radius, subsess="benchmark")
         elapsed_orig = time.time() - start
         results["original"] = elapsed_orig
         print(f"  Time: {elapsed_orig:.2f} seconds")
@@ -195,7 +195,7 @@ def run_benchmark(radius=3, shape=(91, 109, 91), skip_mi=True):
     print("Benchmark 2: Numba implementation (approximate MI)")
     print("-" * 70)
     start = time.time()
-    results_numba_approx = compute_r2m2_numba(
+    results_numba_approx = compute_r2d2_numba(
         image_dict, radius=radius, subsess="benchmark", use_numba_mi=True
     )
     elapsed_numba_approx = time.time() - start
@@ -207,7 +207,7 @@ def run_benchmark(radius=3, shape=(91, 109, 91), skip_mi=True):
     print("Benchmark 3: Hybrid implementation (Numba for MSE/CORR, ANTs for MI)")
     print("-" * 70)
     start = time.time()
-    results_numba_hybrid = compute_r2m2_numba(
+    results_numba_hybrid = compute_r2d2_numba(
         image_dict, radius=radius, subsess="benchmark", use_numba_mi=False
     )
     elapsed_numba_hybrid = time.time() - start
@@ -249,14 +249,14 @@ def run_benchmark(radius=3, shape=(91, 109, 91), skip_mi=True):
 
 def get_args():
     parser = argparse.ArgumentParser(
-        description="Benchmark R2M2 original vs Numba implementations"
+        description="Benchmark R2D2 original vs Numba implementations"
     )
 
     parser.add_argument(
         "--radius",
         type=int,
         default=3,
-        help="ROI radius for R2M2 computation (default: 3)"
+        help="ROI radius for R2D2 computation (default: 3)"
     )
 
     parser.add_argument(

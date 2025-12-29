@@ -1,6 +1,6 @@
-# Testing Guide for R2M2
+# Testing Guide for R2D2
 
-This document provides comprehensive information about testing the R2M2 codebase.
+This document provides comprehensive information about testing the R2D2 codebase.
 
 ## Quick Start
 
@@ -9,10 +9,10 @@ This document provides comprehensive information about testing the R2M2 codebase
 pip install -r requirements-test.txt
 
 # Run all tests
-pytest test_r2m2_base.py -v
+pytest test_r2d2_base.py -v
 
 # Run with coverage
-pytest test_r2m2_base.py --cov=r2m2_base --cov-report=html
+pytest test_r2d2_base.py --cov=r2d2_base --cov-report=html
 open htmlcov/index.html  # View coverage report
 ```
 
@@ -43,7 +43,7 @@ These tests use mocking to isolate individual functions and run quickly:
   - Whole-brain similarity metrics
   - Error handling with NaN fallback
 
-- **TestComputeR2M2** - Tests core R2M2 algorithm
+- **TestComputeR2D2** - Tests core R2D2 algorithm
   - All 6 metrics are computed (MI, MSE, CORR, dm_*)
   - Proper exception handling and propagation
   - Template dimension extraction
@@ -62,35 +62,35 @@ These tests use mocking to isolate individual functions and run quickly:
 
 - **TestIntegration** - End-to-end tests with synthetic ANTs images
   - Currently skipped by default (marked with `@pytest.mark.slow`)
-  - Run manually: `pytest test_r2m2_base.py::TestIntegration -v -m slow`
+  - Run manually: `pytest test_r2d2_base.py::TestIntegration -v -m slow`
 
 ## Running Specific Tests
 
 ```bash
 # Run a single test class
-pytest test_r2m2_base.py::TestROIFunctions -v
+pytest test_r2d2_base.py::TestROIFunctions -v
 
 # Run a single test method
-pytest test_r2m2_base.py::TestLoadImages::test_load_images_file_not_found_registered -v
+pytest test_r2d2_base.py::TestLoadImages::test_load_images_file_not_found_registered -v
 
 # Run tests matching a pattern
-pytest test_r2m2_base.py -k "roi" -v
+pytest test_r2d2_base.py -k "roi" -v
 
 # Run with verbose output and show print statements
-pytest test_r2m2_base.py -v -s
+pytest test_r2d2_base.py -v -s
 ```
 
 ## Coverage Analysis
 
 ```bash
 # Generate HTML coverage report
-pytest test_r2m2_base.py --cov=r2m2_base --cov-report=html
+pytest test_r2d2_base.py --cov=r2d2_base --cov-report=html
 
 # Generate terminal coverage report
-pytest test_r2m2_base.py --cov=r2m2_base --cov-report=term-missing
+pytest test_r2d2_base.py --cov=r2d2_base --cov-report=term-missing
 
 # Generate XML coverage report (for CI/CD)
-pytest test_r2m2_base.py --cov=r2m2_base --cov-report=xml
+pytest test_r2d2_base.py --cov=r2d2_base --cov-report=xml
 ```
 
 ## Test Fixtures and Mocking
@@ -105,7 +105,7 @@ The test suite uses several strategies to avoid dependencies on actual NIfTI fil
 ### Example: Testing with Mocks
 
 ```python
-@patch('r2m2_base.ants.image_read')
+@patch('r2d2_base.ants.image_read')
 def test_load_images_success(self, mock_image_read):
     # Create temporary files
     self.create_mock_nifti_files()
@@ -114,7 +114,7 @@ def test_load_images_success(self, mock_image_read):
     mock_image_read.side_effect = [mock_reg, mock_template, mock_mask]
 
     # Run test
-    result = r2m2_base.load_images(reg_path, template_path)
+    result = r2d2_base.load_images(reg_path, template_path)
 
     # Verify behavior
     assert result["reg_image"] == mock_reg
@@ -131,9 +131,9 @@ The repository includes a GitHub Actions workflow (`.github/workflows/test.yml`)
 
 ## Writing New Tests
 
-When adding new functionality to R2M2, follow this pattern:
+When adding new functionality to R2D2, follow this pattern:
 
-1. **Create test class** in `test_r2m2_base.py`
+1. **Create test class** in `test_r2d2_base.py`
 2. **Add setup/teardown** methods if needed for test fixtures
 3. **Write unit tests** for individual functions with mocks
 4. **Write integration tests** if the feature requires end-to-end testing
@@ -169,7 +169,7 @@ Install ANTs: `pip install antspyx`
 
 ### Tests fail with import errors
 
-Make sure you're in the R2M2 directory: `cd /path/to/R2M2`
+Make sure you're in the R2D2 directory: `cd /path/to/R2D2`
 
 ### Coverage report shows low coverage
 
@@ -177,4 +177,4 @@ Some lines may be difficult to test (e.g., multiprocessing main block). Focus on
 
 ### Mocks aren't working as expected
 
-Check that patch paths match the import in `r2m2_base.py`, not where the function is defined.
+Check that patch paths match the import in `r2d2_base.py`, not where the function is defined.

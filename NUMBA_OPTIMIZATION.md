@@ -1,6 +1,6 @@
-# Numba Optimization for R2M2
+# Numba Optimization for R2D2
 
-This document describes the Numba-accelerated implementation of R2M2 and how to use it.
+This document describes the Numba-accelerated implementation of R2D2 and how to use it.
 
 ## Overview
 
@@ -29,19 +29,19 @@ Replace the import in your code:
 
 ```python
 # Original
-from r2m2_base import compute_r2m2
+from r2d2_base import compute_r2d2
 
 # Numba-accelerated
-from r2m2_numba import compute_r2m2_numba as compute_r2m2
+from r2d2_numba import compute_r2d2_numba as compute_r2d2
 ```
 
 ### Option 2: Call directly
 
 ```python
-from r2m2_numba import compute_r2m2_numba
+from r2d2_numba import compute_r2d2_numba
 
 # With approximate MI (fastest)
-results = compute_r2m2_numba(
+results = compute_r2d2_numba(
     image_dict,
     radius=3,
     subsess="sub-001",
@@ -49,7 +49,7 @@ results = compute_r2m2_numba(
 )
 
 # With ANTs MI (hybrid mode - recommended)
-results = compute_r2m2_numba(
+results = compute_r2d2_numba(
     image_dict,
     radius=3,
     subsess="sub-001",
@@ -59,12 +59,12 @@ results = compute_r2m2_numba(
 
 ### Option 3: Integrate into main pipeline
 
-Modify `r2m2_base.py` to use the Numba implementation:
+Modify `r2d2_base.py` to use the Numba implementation:
 
 ```python
-# At the top of r2m2_base.py
+# At the top of r2d2_base.py
 try:
-    from r2m2_numba import compute_r2m2_numba
+    from r2d2_numba import compute_r2d2_numba
     USE_NUMBA = True
 except ImportError:
     USE_NUMBA = False
@@ -75,9 +75,9 @@ def main(sub_folder, reg_image_name, template_path, radius=3):
     # ... existing code ...
 
     if USE_NUMBA:
-        r2m2 = compute_r2m2_numba(img_dict, radius=radius, subsess=subsess)
+        r2d2 = compute_r2d2_numba(img_dict, radius=radius, subsess=subsess)
     else:
-        r2m2 = compute_r2m2(img_dict, radius=radius, subsess=subsess)
+        r2d2 = compute_r2d2(img_dict, radius=radius, subsess=subsess)
 
     # ... rest of function ...
 ```
@@ -130,7 +130,7 @@ The Numba kernel uses `prange` for parallel execution:
 
 ```python
 @jit(nopython=True, parallel=True)
-def compute_r2m2_kernel(...):
+def compute_r2d2_kernel(...):
     for x in prange(X):  # Parallel over x dimension
         for y in range(Y):
             for z in range(Z):
@@ -156,7 +156,7 @@ You can parallelize at both levels:
 ```bash
 # 4 Python processes, each using 2 Numba threads
 export NUMBA_NUM_THREADS=2
-python r2m2_base.py --list_path subjects.txt --num_python_jobs 4
+python r2d2_base.py --list_path subjects.txt --num_python_jobs 4
 
 # Total parallelism: 4 × 2 = 8 cores
 ```
@@ -184,12 +184,12 @@ Adjust `num_python_jobs` if running out of memory.
 **Solution**: This is JIT compilation. Subsequent runs will be fast. You can pre-compile:
 
 ```python
-from r2m2_numba import compute_r2m2_kernel
+from r2d2_numba import compute_r2d2_kernel
 import numpy as np
 
 # Trigger compilation with dummy data
 dummy = np.zeros((10, 10, 10))
-compute_r2m2_kernel(dummy, dummy, dummy, 3, compute_mi=False)
+compute_r2d2_kernel(dummy, dummy, dummy, 3, compute_mi=False)
 ```
 
 ### Issue: Numba import error
@@ -229,8 +229,8 @@ Always validate Numba results against original for your specific data:
 
 ```python
 # Run both implementations
-results_orig = compute_r2m2(image_dict, radius=3)
-results_numba = compute_r2m2_numba(image_dict, radius=3, use_numba_mi=False)
+results_orig = compute_r2d2(image_dict, radius=3)
+results_numba = compute_r2d2_numba(image_dict, radius=3, use_numba_mi=False)
 
 # Compare
 for key in ['MSE', 'CORR', 'dm_MSE', 'dm_CORR']:
@@ -242,4 +242,4 @@ for key in ['MSE', 'CORR', 'dm_MSE', 'dm_CORR']:
 
 - [Numba Documentation](https://numba.pydata.org/)
 - [ANTs Documentation](https://antspy.readthedocs.io/)
-- Original R2M2 paper: [if available]
+- Original R2D2 paper: [if available]

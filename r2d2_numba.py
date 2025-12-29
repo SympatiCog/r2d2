@@ -1,5 +1,5 @@
 """
-Numba-accelerated implementation of R2M2 computation.
+Numba-accelerated implementation of R2D2 computation.
 
 This module provides significant speedup over the original implementation
 by using Numba JIT compilation for the triple-nested loop computation.
@@ -33,7 +33,7 @@ def _check_ants():
         print("\n" + "=" * 70)
         print("ERROR: ANTs (ANTsPy) is not installed")
         print("=" * 70)
-        print("\nANTs is required for R2M2 image processing operations.")
+        print("\nANTs is required for R2D2 image processing operations.")
         print("\nInstallation instructions:")
         print("\n1. Using pip (recommended):")
         print("   pip install antspyx")
@@ -158,7 +158,7 @@ def compute_mutual_information_approx(arr1, arr2, bins=32):
 
 
 @jit(nopython=True, parallel=True)
-def compute_r2m2_kernel(
+def compute_r2d2_kernel(
     reg_arr,
     tmplt_arr,
     mask_arr,
@@ -166,7 +166,7 @@ def compute_r2m2_kernel(
     compute_mi=True
 ):
     """
-    Numba-accelerated kernel for computing R2M2 metrics.
+    Numba-accelerated kernel for computing R2D2 metrics.
 
     This function performs the core triple-nested loop computation
     with significant performance improvements through JIT compilation
@@ -234,21 +234,21 @@ def compute_r2m2_kernel(
     return MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR
 
 
-def compute_r2m2_numba(
+def compute_r2d2_numba(
     image_dict: dict,
     radius: float = 3,
     subsess: str = "unknown",
     use_numba_mi: bool = False
 ) -> dict:
     """
-    Numba-accelerated version of compute_r2m2.
+    Numba-accelerated version of compute_r2d2.
 
     This function provides significant speedup over the original implementation
     while maintaining compatibility with the existing API.
 
     Args:
         image_dict: Dictionary containing 'template_image', 'reg_image', 'template_mask'
-        radius: Search radius for R2M2 metrics (default: 3)
+        radius: Search radius for R2D2 metrics (default: 3)
         subsess: Subject/session identifier for error messages
         use_numba_mi: If True, use Numba's approximate MI. If False, use ANTs MI (slower but more accurate)
 
@@ -267,7 +267,7 @@ def compute_r2m2_numba(
 
     try:
         # Call Numba-accelerated kernel
-        MI_arr, MSE_arr, CORR_arr, dm_MI_arr, dm_MSE_arr, dm_CORR_arr = compute_r2m2_kernel(
+        MI_arr, MSE_arr, CORR_arr, dm_MI_arr, dm_MSE_arr, dm_CORR_arr = compute_r2d2_kernel(
             reg_arr,
             tmplt_arr,
             mask_arr,
@@ -315,7 +315,7 @@ def compute_r2m2_numba(
         return results_dict
 
     except Exception as e:
-        print(f"r2m2_numba failed on {subsess}: {e}")
+        print(f"r2d2_numba failed on {subsess}: {e}")
         raise
 
 
@@ -379,7 +379,7 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
 
 
 # ============================================================================
-# Command-line interface (mirrors r2m2_base.py structure)
+# Command-line interface (mirrors r2d2_base.py structure)
 # ============================================================================
 
 def load_images(reg_image: str, template_path: str) -> dict:
@@ -419,7 +419,7 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
 
     Args:
         sub_fldr: full path to destination folder
-        image_res: dictionary containing the r2m2 images
+        image_res: dictionary containing the r2d2 images
         radius: radius value for filename
     """
     import os
@@ -427,13 +427,13 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
     os.makedirs(sub_fldr, exist_ok=True)
     print(f"Saving:")
     for k, v in image_res.items():
-        outpath = os.path.join(sub_fldr, f"r2m2_{k}_rad{radius}.nii")
+        outpath = os.path.join(sub_fldr, f"r2d2_{k}_rad{radius}.nii")
         print(f"  {outpath}")
         ants.image_write(v, outpath)
 
 
 def comp_stats(
-    r2m2: dict,
+    r2d2: dict,
     img_dict: dict,
     metrics=["MattesMutualInformation", "MeanSquares", "Correlation"],
 ) -> dict:
@@ -441,7 +441,7 @@ def comp_stats(
     Compute basic summary stats on images.
 
     Args:
-        r2m2: dictionary containing the r2m2 images
+        r2d2: dictionary containing the r2d2 images
         img_dict: dictionary containing template and registered images
         metrics: list of similarity metrics to compute on whole brain
 
@@ -454,7 +454,7 @@ def comp_stats(
     summary_stats = {}
 
     try:
-        for k, v in r2m2.items():
+        for k, v in r2d2.items():
             summary_stats[f"{k}_mean"] = v[mask > 0].mean()
             summary_stats[f"{k}_std"] = v[mask > 0].std()
             summary_stats[f"{k}_z"] = (
@@ -468,7 +468,7 @@ def comp_stats(
                 metric_type=metric,
             )
     except:
-        for k, v in r2m2.items():
+        for k, v in r2d2.items():
             summary_stats[f"{k}_mean"] = np.nan
             summary_stats[f"{k}_std"] = np.nan
             summary_stats[f"{k}_z"] = np.nan
@@ -492,7 +492,7 @@ def main(
         sub_folder: path to subject folder
         reg_image_name: name of the registered image file
         template_path: path to the template image
-        radius: ROI radius for R2M2 computation
+        radius: ROI radius for R2D2 computation
         use_numba_mi: if True, use Numba approximate MI; if False, use ANTs MI
 
     Returns:
@@ -513,19 +513,19 @@ def main(
     subsess = sub_id
 
     # Use Numba-accelerated version
-    r2m2 = compute_r2m2_numba(
+    r2d2 = compute_r2d2_numba(
         img_dict, radius=radius, subsess=subsess, use_numba_mi=use_numba_mi
     )
 
-    if type(r2m2) is dict:
-        save_images(sub_folder, r2m2, radius)
+    if type(r2d2) is dict:
+        save_images(sub_folder, r2d2, radius)
         res = {"subsess": subsess}
-        comp_vals = comp_stats(r2m2, img_dict)
+        comp_vals = comp_stats(r2d2, img_dict)
         res.update(comp_vals)
         return res
     else:
         print(f"{subsess} failed in main()")
-        return r2m2
+        return r2d2
 
 
 def get_args():
@@ -534,7 +534,7 @@ def get_args():
 
     parser = argparse.ArgumentParser(
         description="Compute Regional Registration Mismatch Metrics (Numba-accelerated version).",
-        epilog="This is the high-performance Numba implementation providing 10-50x speedup over r2m2_base.py"
+        epilog="This is the high-performance Numba implementation providing 10-50x speedup over r2d2_base.py"
     )
 
     parser.add_argument(
@@ -624,8 +624,8 @@ if __name__ == "__main__":
     else:
         print("\nError: You must provide either --list_path or --search_string\n")
         print("Examples:")
-        print("  python r2m2_numba.py --list_path subjects.txt")
-        print("  python r2m2_numba.py --search_string './sub-*/registered_t2_img.nii.gz'")
+        print("  python r2d2_numba.py --list_path subjects.txt")
+        print("  python r2d2_numba.py --search_string './sub-*/registered_t2_img.nii.gz'")
         print("\nOptional flags:")
         print("  --use-numba-mi         Use fast approximate MI (default: use ANTs MI)")
         print("  --radius N             Set ROI radius (default: 3)")
@@ -633,7 +633,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"\n{'='*70}")
-    print(f"R2M2 Numba-Accelerated Processing")
+    print(f"R2D2 Numba-Accelerated Processing")
     print(f"{'='*70}")
     print(f"Mode: {'Full Numba (approximate MI)' if args.use_numba_mi else 'Hybrid (ANTs MI + Numba MSE/CORR)'}")
     print(f"Template: {args.template_path}")
@@ -661,10 +661,10 @@ if __name__ == "__main__":
     dat = pd.DataFrame(dict_data)
     ts = pd.Timestamp("now")
     tstr = ts.strftime("%Y_%m_%d-%X")
-    output_csv = f"r2m2_numba_summary_stats_{tstr}.csv"
+    output_csv = f"r2d2_numba_summary_stats_{tstr}.csv"
     dat.to_csv(output_csv, index=False)
 
-    error_log = f"r2m2_numba_errs_{tstr}.txt"
+    error_log = f"r2d2_numba_errs_{tstr}.txt"
     with open(error_log, "w") as f:
         f.write(str(err_data))
 

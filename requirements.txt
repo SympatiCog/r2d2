@@ -1,4 +1,4 @@
-# Core dependencies for R2M2
+# Core dependencies for R2D2
 numpy>=1.20.0
 pandas>=1.3.0
 antspyx>=0.3.0
