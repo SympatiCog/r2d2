@@ -1,6 +1,6 @@
 # R2D2: Regional Registration Deviation Distance
 
-![R2D2 Logo]('media/R2D2sm.png')
+![R2D2 Logo](media/R2D2sm.png)
 [![Tests](https://github.com/SympatiCog/r2d2/workflows/Tests/badge.svg)](https://github.com/SympatiCog/r2d2/actions)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
