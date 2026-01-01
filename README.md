@@ -330,6 +330,73 @@ Contents:
 * Lists subjects that failed processing
 * Includes error messages for debugging
 
+## Recommended Applications
+
+### Grand Mean Scaling for EPI Data
+
+When computing R2D2 metrics on EPI (functional MRI) data, we strongly recommend applying **grand mean scaling** before registration to template space. This pre-processing step ensures that intensity variations between subjects don't confound your registration quality metrics.
+
+#### Why Grand Mean Scaling?
+
+EPI images can have vastly different intensity ranges across subjects due to:
+- Scanner calibration differences
+- Coil sensitivity variations
+- Subject-specific factors (head size, positioning)
+
+Without normalization, the similarity metrics (MI, MSE, Correlation) may reflect intensity differences rather than true registration quality.
+
+#### The "Mean of Means" Workflow
+
+We recommend a 5-step workflow that combines **Intensity Normalization** with **Brain Masking**:
+
+1. **Compute mean EPI** for each subject (temporal mean across volumes)
+2. **Create brain mask** from the mean EPI using BET or similar
+3. **Calculate global mean intensity** within the brain mask
+4. **Scale all voxels** by a target value (e.g., 10000) divided by global mean
+5. **Apply brain mask** to remove non-brain tissue
+
+#### FSL Implementation
+
+Here's a complete implementation using FSL tools:
+
+```bash
+#!/bin/bash
+# Grand Mean Scaling for EPI before R2D2
+
+# Input: 4D EPI time series
+input_epi="sub-01_bold.nii.gz"
+target_mean=10000
+
+# Step 1: Compute temporal mean
+fslmaths ${input_epi} -Tmean mean_epi.nii.gz
+
+# Step 2: Create brain mask
+bet mean_epi.nii.gz brain -m -f 0.3
+
+# Step 3: Get global mean within mask
+global_mean=$(fslstats mean_epi.nii.gz -k brain_mask.nii.gz -M)
+
+# Step 4: Calculate scaling factor
+scale_factor=$(echo "scale=6; ${target_mean} / ${global_mean}" | bc)
+
+# Step 5: Apply scaling and mask
+fslmaths mean_epi.nii.gz \
+    -mul ${scale_factor} \
+    -mas brain_mask.nii.gz \
+    mean_epi_scaled.nii.gz
+
+echo "Scaled from mean=${global_mean} to target=${target_mean}"
+```
+
+#### Why This Matters for R2D2
+
+After grand mean scaling:
+- **MI (Mutual Information)**: More accurately reflects structural alignment
+- **MSE (Mean Squared Error)**: Comparable across subjects
+- **Correlation**: Not affected by linear intensity scaling, but masking improves signal
+
+This pre-processing ensures that your R2D2 registration quality metrics reflect true geometric alignment rather than intensity confounds.
+
 ## Configuration
 
 ### Parallelization Tuning
