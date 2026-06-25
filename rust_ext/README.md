@@ -152,31 +152,35 @@ Two MI methods, selected with `mi_method`:
 ```python
 # ANTs-faithful MI (negative; lower = more similar)
 MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
-    reg, tmplt, mask, radius=3, bins=32, mi_method="mattes"
+    reg, tmplt, mask, radius=3, bins=50, mi_method="mattes"
 )
 ```
 
 Both methods are shift-invariant per window, so `dm_MI == MI`.
 
-`bins` is the number of histogram bins; for `"mattes"` it must be > 4 (two guard
-bins on each side). MI cannot use the summed-area-table shortcut — it needs the
-per-window joint histogram — so it is recomputed per window regardless of
-`use_sat`.
+`bins` is the number of histogram bins (must be > 4 for `"mattes"` — two guard
+bins on each side). The `compute_r2d2_rust` wrapper defaults it to **50** for
+`"mattes"` (ITK's default) and 32 for `"approx"`. MI cannot use the
+summed-area-table shortcut — it needs the per-window joint histogram — so it is
+recomputed per window regardless of `use_sat`.
 
 ### Validation
 
 `mattes_mutual_information` is checked against an independent pure-Python
 reimplementation of the same ITK algorithm (`test_mattes_matches_python_reference`,
 exact to 1e-9) and structurally (negative metric, shift-invariance, ranks
-identical > independent). `tests/test_kernel.py` also includes an **opt-in**
-parity test against ANTs itself (`test_mattes_matches_ants_if_available`),
-skipped unless ANTsPy is installed — run it on a machine with ANTs to confirm
-end-to-end agreement. Exact agreement depends on matching the bin count and
-ANTs' sampling settings.
+identical > independent).
+
+`tests/test_kernel.py` also includes an **opt-in** parity test against ANTs
+itself (`test_mattes_matches_ants_if_available`), skipped unless ANTsPy is
+installed. The kernel evaluates each window **densely**, so the apples-to-apples
+ANTs call uses `sampling_strategy="none"` at 50 bins — under which the two agree
+**to floating point** (verified: `-1.104693` vs `-1.104693`). ANTs'
+*default* `image_similarity` uses `"regular"` subsampling and so differs by a few
+percent; that's a sampling choice, not an algorithmic difference, and dense is
+the right choice for the small per-voxel windows here.
 
 ## Possible next steps
 
 - f32 input support to halve memory traffic.
 - Parallelize the prefix-sum build (currently a single O(voxels) pass).
-- Optionally match ANTs' default sampling for the Mattes metric if sub-1e-2
-  parity is needed.

@@ -28,7 +28,7 @@ def compute_r2d2_rust(
     image_dict: dict,
     radius: int = 3,
     subsess: str = "unknown",
-    bins: int = 32,
+    bins: int = None,
     compute_mi: bool = True,
     use_sat: bool = True,
     mi_method: str = "approx",
@@ -42,7 +42,8 @@ def compute_r2d2_rust(
             (ANTsImage values).
         radius: neighborhood half-width (window side = 2*radius + 1).
         subsess: subject/session id, used only in error messages.
-        bins: histogram bins for the approximate MI.
+        bins: number of histogram bins for MI. Defaults to 50 for
+            mi_method="mattes" (ITK's default) and 32 for "approx".
         compute_mi: if False, MI / dm_MI come back as zeros (cheaper).
         use_sat: if True (default), use the summed-area-table kernel so MSE/CORR
             cost O(1) per voxel regardless of radius. False uses the direct
@@ -58,11 +59,18 @@ def compute_r2d2_rust(
     Note:
         With mi_method="approx" (default), MI is the same fast histogram
         approximation used by the Numba path (positive). With
-        mi_method="mattes", MI reproduces ITK's Mattes metric and is therefore
-        negative (lower = more similar), matching ants.image_similarity. MSE
-        and Correlation always match ANTs to floating point.
+        mi_method="mattes", MI reproduces ITK's Mattes metric exactly and is
+        therefore negative (lower = more similar): at the default 50 bins it
+        equals ants.image_similarity(..., sampling_strategy="none") (dense)
+        to floating point. ANTs' *default* sampling ("regular") subsamples and
+        differs slightly; the per-voxel windows here are evaluated densely.
+        MSE and Correlation always match ANTs to floating point.
     """
     import ants  # local import: kernel itself needs no ANTs
+
+    # ITK's Mattes default is 50 bins; the approx histogram MI uses 32.
+    if bins is None:
+        bins = 50 if mi_method == "mattes" else 32
 
     template_image = image_dict.get("template_image")
     reg_image = image_dict.get("reg_image")

@@ -244,25 +244,28 @@ def test_mattes_sat_and_direct_agree(use_sat):
 def test_mattes_matches_ants_if_available():
     """Opt-in parity check against ANTs itself.
 
-    Skipped unless ANTsPy is installed. Compares the kernel's Mattes MI on a
-    single window to ants.image_similarity on the same window arrays, isolating
-    the MI algorithm from cropping/window-size conventions.
+    Skipped unless ANTsPy is installed. The kernel evaluates the window densely,
+    so the apples-to-apples ANTs comparison uses sampling_strategy="none" (also
+    dense) at ITK's default 50 bins. Under those settings the two agree to
+    floating point. ANTs' *default* sampling ("regular") subsamples and differs
+    by a few percent — that's a sampling choice, not an algorithmic difference.
     """
     ants = pytest.importorskip("ants")
-    rng = np.random.default_rng(21)
-    bins = 32
-    fixed = rng.normal(size=(9, 9, 9))
-    moving = fixed + 0.4 * rng.normal(size=(9, 9, 9))
+    bins = 50  # ITK's Mattes default
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        fixed = rng.normal(size=(9, 9, 9))
+        moving = fixed + 0.4 * rng.normal(size=(9, 9, 9))
 
-    got = _mattes_via_kernel(fixed, moving, bins)
+        got = _mattes_via_kernel(fixed, moving, bins)
 
-    f_img = ants.from_numpy(np.ascontiguousarray(fixed))
-    m_img = ants.from_numpy(np.ascontiguousarray(moving))
-    want = ants.image_similarity(
-        f_img, m_img, metric_type="MattesMutualInformation"
-    )
-    # Tolerance is loose: ANTs' default bin count / sampling may differ.
-    assert abs(got - want) < 5e-2, f"kernel={got} ants={want}"
+        f_img = ants.from_numpy(np.ascontiguousarray(fixed))
+        m_img = ants.from_numpy(np.ascontiguousarray(moving))
+        want = ants.image_similarity(
+            f_img, m_img, metric_type="MattesMutualInformation",
+            sampling_strategy="none",
+        )
+        assert abs(got - want) < 1e-3, f"seed={seed} kernel={got} ants={want}"
 
 
 if __name__ == "__main__":
