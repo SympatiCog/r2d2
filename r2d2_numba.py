@@ -529,7 +529,7 @@ def main(
         if compute_r2d2_rust is None:
             raise RuntimeError(
                 "backend='rust' requested but the r2d2_rust extension is not "
-                "installed. Install it (see r2d2_rust/README.md) or use "
+                "installed. Install it (see rust_ext/README.md) or use "
                 "backend='auto'/'numba'."
             )
         # mi_method="mattes" matches the ANTs/ITK MI convention used by the

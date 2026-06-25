@@ -2,7 +2,7 @@
 
 Run after building/installing the extension (e.g. `maturin develop --release`):
 
-    pytest r2d2_rust/tests/test_kernel.py -v
+    pytest rust_ext/tests/test_kernel.py -v
 
 MSE and Correlation must match the reference to floating-point tolerance.
 MI uses a histogram approximation, so it is only sanity-checked (finite,

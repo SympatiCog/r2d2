@@ -202,7 +202,7 @@ def _run_compute(img_dict: dict, radius, subsess: str, backend: str = "auto") ->
         if compute_r2d2_rust is None:
             raise RuntimeError(
                 "backend='rust' requested but the r2d2_rust extension is not "
-                "installed. Install it (see r2d2_rust/README.md) or use "
+                "installed. Install it (see rust_ext/README.md) or use "
                 "backend='auto'/'python'."
             )
         return compute_r2d2_rust(

@@ -32,7 +32,7 @@ reimplementation matching `ants.image_similarity` (see "Mutual information").
 ## Layout
 
 ```
-r2d2_rust/
+rust_ext/                   # crate directory (Python import name is `r2d2_rust`)
 ├── Cargo.toml              # Rust crate (cdylib + rlib)
 ├── pyproject.toml          # maturin build config
 ├── src/lib.rs              # kernel + PyO3 bindings + Rust unit tests
@@ -46,7 +46,7 @@ r2d2_rust/
 
 ```bash
 # Dev install into the active virtualenv/conda env
-cd r2d2_rust
+cd rust_ext
 maturin develop --release
 
 # Or build a redistributable wheel
