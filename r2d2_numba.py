@@ -17,6 +17,15 @@ import numba
 from numba import jit, prange
 import re
 
+# Optional Rust-accelerated backend. Falls back to the Numba kernel below if
+# the r2d2_rust extension isn't installed.
+try:
+    from r2d2_rust import compute_r2d2_rust
+    _HAVE_RUST = True
+except ImportError:
+    compute_r2d2_rust = None
+    _HAVE_RUST = False
+
 # Lazy import for ANTs - only check when actually running (not for --help)
 ants = None
 
@@ -484,6 +493,7 @@ def main(
     template_path: str = None,
     radius: int = 3,
     use_numba_mi: bool = False,
+    backend: str = "auto",
 ) -> dict:
     """
     Main processing function for a single subject.
@@ -494,6 +504,7 @@ def main(
         template_path: path to the template image
         radius: ROI radius for R2D2 computation
         use_numba_mi: if True, use Numba approximate MI; if False, use ANTs MI
+        backend: "auto" (Rust extension if installed, else Numba), "rust", or "numba"
 
     Returns:
         Dictionary with subject statistics, or Exception on failure
@@ -512,10 +523,27 @@ def main(
     sub_id = m.group(0) if m else None
     subsess = sub_id
 
-    # Use Numba-accelerated version
-    r2d2 = compute_r2d2_numba(
-        img_dict, radius=radius, subsess=subsess, use_numba_mi=use_numba_mi
-    )
+    # Prefer the Rust extension when available; otherwise use the Numba kernel.
+    use_rust = backend == "rust" or (backend == "auto" and _HAVE_RUST)
+    if use_rust:
+        if compute_r2d2_rust is None:
+            raise RuntimeError(
+                "backend='rust' requested but the r2d2_rust extension is not "
+                "installed. Install it (see r2d2_rust/README.md) or use "
+                "backend='auto'/'numba'."
+            )
+        # mi_method="mattes" matches the ANTs/ITK MI convention used by the
+        # hybrid Numba path (use_numba_mi=False).
+        r2d2 = compute_r2d2_rust(
+            img_dict,
+            radius=radius,
+            subsess=subsess,
+            mi_method="approx" if use_numba_mi else "mattes",
+        )
+    else:
+        r2d2 = compute_r2d2_numba(
+            img_dict, radius=radius, subsess=subsess, use_numba_mi=use_numba_mi
+        )
 
     if type(r2d2) is dict:
         save_images(sub_folder, r2d2, radius)
@@ -592,6 +620,14 @@ def get_args():
         help="Path to template image file (e.g., MNI152_T1_2mm.nii.gz). Template mask must exist as {template}_mask.nii.gz",
     )
 
+    parser.add_argument(
+        "--backend",
+        dest="backend",
+        default="auto",
+        choices=["auto", "rust", "numba"],
+        help="Compute backend: 'auto' uses the Rust extension if installed else Numba; 'rust' requires it; 'numba' forces the Numba kernel. default=auto",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -635,6 +671,9 @@ if __name__ == "__main__":
     print(f"\n{'='*70}")
     print(f"R2D2 Numba-Accelerated Processing")
     print(f"{'='*70}")
+    _rust_active = args.backend in ("auto", "rust") and _HAVE_RUST
+    _backend_label = "Rust" if _rust_active else "Numba"
+    print(f"Backend: {args.backend} -> {_backend_label} (Rust extension {'available' if _HAVE_RUST else 'NOT available'})")
     print(f"Mode: {'Full Numba (approximate MI)' if args.use_numba_mi else 'Hybrid (ANTs MI + Numba MSE/CORR)'}")
     print(f"Template: {args.template_path}")
     print(f"Subjects: {len(flist)}")
@@ -649,7 +688,8 @@ if __name__ == "__main__":
             sub_folder,
             radius=args.radius,
             use_numba_mi=args.use_numba_mi,
-            template_path=args.template_path
+            template_path=args.template_path,
+            backend=args.backend,
         )
 
     with Pool(args.num_python_jobs) as pool:

@@ -381,7 +381,11 @@ class TestMainFunction:
             template_path = os.path.join(template_dir, "template.nii.gz")
             open(template_path, 'a').close()
 
-            result = r2d2_base.main(self.sub_folder, template_path=template_path, radius=3)
+            # Force the python backend so the patched compute_r2d2 is exercised
+            # regardless of whether the Rust extension is installed.
+            result = r2d2_base.main(
+                self.sub_folder, template_path=template_path, radius=3, backend="python"
+            )
 
             assert "subsess" in result
             assert result["subsess"] == "sub-001"
@@ -389,6 +393,57 @@ class TestMainFunction:
             mock_load.assert_called_once()
             mock_compute.assert_called_once()
             mock_save.assert_called_once()
+        finally:
+            shutil.rmtree(template_dir)
+
+    @patch('r2d2_base.comp_stats')
+    @patch('r2d2_base.save_images')
+    @patch('r2d2_base.load_images')
+    def test_main_uses_rust_backend_when_selected(self, mock_load, mock_save, mock_stats):
+        """When backend='rust', main routes to compute_r2d2_rust, not compute_r2d2."""
+        reg_image_path = os.path.join(self.sub_folder, "registered_t2_img.nii.gz")
+        open(reg_image_path, 'a').close()
+
+        mock_load.return_value = {"reg_image": Mock(), "template_image": Mock(), "template_mask": Mock()}
+        mock_stats.return_value = {"MI_mean": 0.5}
+
+        template_dir = tempfile.mkdtemp()
+        try:
+            template_path = os.path.join(template_dir, "template.nii.gz")
+            open(template_path, 'a').close()
+
+            rust_mock = Mock(return_value={"MI": Mock()})
+            with patch('r2d2_base._HAVE_RUST', True), \
+                 patch('r2d2_base.compute_r2d2_rust', rust_mock), \
+                 patch('r2d2_base.compute_r2d2') as py_compute:
+                result = r2d2_base.main(
+                    self.sub_folder, template_path=template_path, radius=3, backend="rust"
+                )
+
+            rust_mock.assert_called_once()
+            py_compute.assert_not_called()
+            assert result["subsess"] == "sub-001"
+        finally:
+            shutil.rmtree(template_dir)
+
+    @patch('r2d2_base.load_images')
+    def test_main_rust_backend_errors_when_unavailable(self, mock_load):
+        """backend='rust' without the extension installed raises a clear error."""
+        reg_image_path = os.path.join(self.sub_folder, "registered_t2_img.nii.gz")
+        open(reg_image_path, 'a').close()
+        mock_load.return_value = {"reg_image": Mock(), "template_image": Mock(), "template_mask": Mock()}
+
+        template_dir = tempfile.mkdtemp()
+        try:
+            template_path = os.path.join(template_dir, "template.nii.gz")
+            open(template_path, 'a').close()
+
+            with patch('r2d2_base._HAVE_RUST', False), \
+                 patch('r2d2_base.compute_r2d2_rust', None):
+                with pytest.raises(RuntimeError, match="r2d2_rust"):
+                    r2d2_base.main(
+                        self.sub_folder, template_path=template_path, backend="rust"
+                    )
         finally:
             shutil.rmtree(template_dir)
 

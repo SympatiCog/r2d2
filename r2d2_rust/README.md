@@ -73,14 +73,22 @@ from r2d2_rust import compute_r2d2_rust as compute_r2d2
 results = compute_r2d2(image_dict, radius=3)   # dict of ANTsImages
 ```
 
-To wire it into `r2d2_base.py`:
+### Pipeline integration
 
-```python
-try:
-    from r2d2_rust import compute_r2d2_rust as compute_r2d2
-except ImportError:
-    pass  # fall back to the pure-Python / Numba implementation
+`r2d2_base.py` and `r2d2_numba.py` already detect this extension and prefer it
+when installed, falling back to their pure-Python / Numba kernels otherwise.
+Both expose a `--backend` flag:
+
+```bash
+# auto (default): Rust if installed, else the module's own kernel
+python r2d2_base.py  --search_string './sub-*/reg.nii.gz' --template_path tmpl.nii.gz
+python r2d2_base.py  ... --backend rust    # require the Rust extension
+python r2d2_base.py  ... --backend python  # force pure Python
+python r2d2_numba.py ... --backend numba   # force the Numba kernel
 ```
+
+When the Rust backend is used, MI is computed with `mi_method="mattes"` so its
+sign convention matches the ANTs-based pipelines (negative = more similar).
 
 ## Testing
 

@@ -11,6 +11,15 @@ import pandas as pd
 import argparse
 import glob
 
+# Optional Rust-accelerated backend. Falls back to the pure-Python
+# compute_r2d2 below if the r2d2_rust extension isn't installed.
+try:
+    from r2d2_rust import compute_r2d2_rust
+    _HAVE_RUST = True
+except ImportError:
+    compute_r2d2_rust = None
+    _HAVE_RUST = False
+
 antsCoreImage = ants.core.ants_image.ANTsImage
 unit_norm = lambda x: x / x.std()
 zscale = lambda x: (x - x.mean()) / x.std()
@@ -177,11 +186,37 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
         ants.image_write(v, outpath)
 
 
+def _run_compute(img_dict: dict, radius, subsess: str, backend: str = "auto") -> dict:
+    """Dispatch R2D2 computation to the selected backend.
+
+    backend:
+        "auto"   - use the Rust extension if installed, else pure Python
+        "rust"   - require the Rust extension (error if missing)
+        "python" - force the pure-Python compute_r2d2
+
+    The Rust path uses mi_method="mattes" so its MI matches the ANTs/ITK
+    convention (negative mutual information) of the pure-Python path.
+    """
+    use_rust = backend == "rust" or (backend == "auto" and _HAVE_RUST)
+    if use_rust:
+        if compute_r2d2_rust is None:
+            raise RuntimeError(
+                "backend='rust' requested but the r2d2_rust extension is not "
+                "installed. Install it (see r2d2_rust/README.md) or use "
+                "backend='auto'/'python'."
+            )
+        return compute_r2d2_rust(
+            img_dict, radius=radius, subsess=subsess, mi_method="mattes"
+        )
+    return compute_r2d2(img_dict, radius=radius, subsess=subsess)
+
+
 def main(
     sub_folder: str,
     reg_image_name: str = "registered_t2_img.nii.gz",
     template_path: str = None,
     radius=3,
+    backend: str = "auto",
 ) -> dict:
     """
     Main function.
@@ -189,6 +224,7 @@ def main(
     :param folder: path to the folder
     :param reg_image_name: name of the registered image
     :param template_path: path to the template
+    :param backend: compute backend - "auto" (Rust if available), "rust", or "python"
     """
     if template_path is None:
         raise ValueError("template_path is required. Please specify --template_path when running from command line.")
@@ -198,7 +234,7 @@ def main(
         reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
     )
     subsess = sub_folder.split("/")[-1]
-    r2d2 = compute_r2d2(img_dict, radius=radius, subsess=subsess)
+    r2d2 = _run_compute(img_dict, radius=radius, subsess=subsess, backend=backend)
     if type(r2d2) is dict:
         save_images(sub_folder, r2d2, radius)
         res = {"subsess": subsess}
@@ -215,19 +251,21 @@ def main_wrapper(
     reg_image_name: str = "registered_t2_img.nii.gz",
     template_path: str = None,
     radius=3,
+    backend: str = "auto",
 ) -> dict:
     """
     Wrapper for main function that catches exceptions for parallel processing.
-    
+
     :param sub_folder: path to the folder
     :param reg_image_name: name of the registered image
     :param template_path: path to the template
     :param radius: search radius for r2d2 computation
+    :param backend: compute backend - "auto", "rust", or "python"
     :return: dict with success/error information
     """
     subsess = sub_folder.split("/")[-1]
     try:
-        res = main(sub_folder, reg_image_name, template_path, radius)
+        res = main(sub_folder, reg_image_name, template_path, radius, backend)
         if isinstance(res, dict):
             return res
         else:
@@ -326,6 +364,14 @@ def get_args():
         help="Path to template image file (e.g., MNI152_T1_2mm.nii.gz). Template mask must exist as {template}_mask.nii.gz",
     )
 
+    parser.add_argument(
+        "--backend",
+        dest="backend",
+        default="auto",
+        choices=["auto", "rust", "python"],
+        help="Compute backend: 'auto' uses the Rust extension if installed else pure Python; 'rust' requires it; 'python' forces pure Python. default=auto",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -335,6 +381,9 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = args.num_itk_cores
+
+    if args.backend in ("auto", "rust"):
+        print(f"Compute backend: {args.backend} (Rust extension {'available' if _HAVE_RUST else 'NOT available'})")
 
     if args.list_path is not None:
         with open(args.list_path, "r") as f:
@@ -354,7 +403,7 @@ if __name__ == "__main__":
 
     # Create wrapper function to pass template_path
     def main_wrapper(sub_folder):
-        return main(sub_folder, template_path=args.template_path)
+        return main(sub_folder, template_path=args.template_path, backend=args.backend)
 
     with Pool(args.num_python_jobs) as pool:
         res = pool.map(main_wrapper, flist)
