@@ -54,6 +54,12 @@ maturin build --release
 pip install target/wheels/r2d2_rust-*.whl
 ```
 
+> **macOS note:** `cargo test` / `cargo build` link via `dynamic_lookup` (set in
+> `.cargo/config.toml`) so the `extension-module` feature — which doesn't link
+> libpython — doesn't fail the macOS linker with `Undefined symbols ... _Py...`.
+> This is handled automatically; no action needed. `maturin build`/`develop`
+> apply the same flags, and Linux/Windows ignore them.
+
 ## Usage
 
 Array-in / array-out (no ANTs):
