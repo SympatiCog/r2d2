@@ -25,8 +25,9 @@ On top of that, the default kernel uses **summed-area tables (integral images)**
 so MSE and Correlation cost O(1) per voxel *regardless of radius* — this stacks
 with the language speedup (see "Summed-area-table kernel" below).
 
-MSE and Correlation match ANTs/numpy to floating point. MI uses the same fast
-histogram approximation as the Numba path (see "Mutual information" below).
+MSE and Correlation match ANTs/numpy to floating point. MI offers two methods —
+a fast histogram approximation (default) and a faithful ITK-Mattes
+reimplementation matching `ants.image_similarity` (see "Mutual information").
 
 ## Layout
 
@@ -121,22 +122,47 @@ will vary with core count.)
 
 ## Mutual information
 
-`compute_r2d2` computes a histogram-based **approximation** of MI, matching
-`r2d2_numba.compute_mutual_information_approx` — not ANTs' Parzen-windowed
-Mattes MI. Because each window is rescaled to its own range, the approximation
-is shift-invariant, so the demeaned MI equals the raw MI here.
+Two MI methods, selected with `mi_method`:
 
-If you need exact ANTs agreement, two paths:
+- **`"approx"`** (default) — a fast histogram MI matching
+  `r2d2_numba.compute_mutual_information_approx`. Positive; cheap.
+- **`"mattes"`** — a faithful reimplementation of ITK's
+  `MattesMutualInformationImageToImageMetric`, the metric ANTs uses for
+  `metric_type="MattesMutualInformation"`. It uses B-spline Parzen windowing
+  (zero-order for the fixed/template image, cubic spread over four bins for the
+  moving/registered image) and ITK's `bins - 2*padding` bin layout with two
+  guard bins per side. Like ANTs it returns the **metric value**, i.e. the
+  *negative* mutual information (lower = more similar), so its sign is opposite
+  the approximation's.
 
-1. **Hybrid**: run the Rust kernel with `compute_mi=False` and compute MI/dm_MI
-   separately with ANTs (see `r2d2_numba.compute_mi_with_ants`), substituting
-   those two volumes.
-2. **Native Mattes**: implement Parzen-windowed Mattes MI in `src/lib.rs`. This
-   is the one metric that needs care for bit-for-bit ANTs parity.
+```python
+# ANTs-faithful MI (negative; lower = more similar)
+MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
+    reg, tmplt, mask, radius=3, bins=32, mi_method="mattes"
+)
+```
+
+Both methods are shift-invariant per window, so `dm_MI == MI`.
+
+`bins` is the number of histogram bins; for `"mattes"` it must be > 4 (two guard
+bins on each side). MI cannot use the summed-area-table shortcut — it needs the
+per-window joint histogram — so it is recomputed per window regardless of
+`use_sat`.
+
+### Validation
+
+`mattes_mutual_information` is checked against an independent pure-Python
+reimplementation of the same ITK algorithm (`test_mattes_matches_python_reference`,
+exact to 1e-9) and structurally (negative metric, shift-invariance, ranks
+identical > independent). `tests/test_kernel.py` also includes an **opt-in**
+parity test against ANTs itself (`test_mattes_matches_ants_if_available`),
+skipped unless ANTsPy is installed — run it on a machine with ANTs to confirm
+end-to-end agreement. Exact agreement depends on matching the bin count and
+ANTs' sampling settings.
 
 ## Possible next steps
 
-- Native Mattes MI for exact ANTs parity (the one metric still computed
-  per-window).
 - f32 input support to halve memory traffic.
 - Parallelize the prefix-sum build (currently a single O(voxels) pass).
+- Optionally match ANTs' default sampling for the Mattes metric if sub-1e-2
+  parity is needed.

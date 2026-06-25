@@ -119,6 +119,152 @@ def test_shape_mismatch_raises():
         r2d2_rust.compute_r2d2(reg, tmplt, mask[:-1], 2)
 
 
+def test_mi_method_validation():
+    reg, tmplt, mask = _random_volumes()
+    with pytest.raises(ValueError):
+        r2d2_rust.compute_r2d2(reg, tmplt, mask, 2, mi_method="bogus")
+    # mattes needs bins > 4
+    with pytest.raises(ValueError):
+        r2d2_rust.compute_r2d2(reg, tmplt, mask, 2, bins=4, mi_method="mattes")
+
+
+# --------------------------------------------------------------------------
+# Mattes MI: validate the Rust kernel against an independent Python reference
+# of the same ITK algorithm, then (optionally) against ANTs itself.
+# --------------------------------------------------------------------------
+
+def _bspline3(t):
+    a = abs(t)
+    if a < 1.0:
+        return (4.0 - 6.0 * a * a + 3.0 * a * a * a) / 6.0
+    if a < 2.0:
+        b = 2.0 - a
+        return b * b * b / 6.0
+    return 0.0
+
+
+def _mattes_reference(fixed, moving, bins, padding=2):
+    """Pure-Python reimplementation of ITK's Mattes MI (negative MI)."""
+    f = np.asarray(fixed, dtype=np.float64).ravel()
+    m = np.asarray(moving, dtype=np.float64).ravel()
+    if f.size == 0 or bins <= 2 * padding:
+        return 0.0
+    fmin, fmax = f.min(), f.max()
+    mmin, mmax = m.min(), m.max()
+    if fmax == fmin or mmax == mmin:
+        return 0.0
+
+    usable = bins - 2 * padding
+    f_bin = (fmax - fmin) / usable
+    m_bin = (mmax - mmin) / usable
+    f_nmin = fmin / f_bin - padding
+    m_nmin = mmin / m_bin - padding
+
+    joint = np.zeros((bins, bins))
+    lo, hi = 2, bins - 3
+    for fv, mv in zip(f, m):
+        fi = int(np.clip(int(np.floor(fv / f_bin - f_nmin)), lo, hi))
+        mterm = mv / m_bin - m_nmin
+        mi_ = int(np.clip(int(np.floor(mterm)), lo, hi))
+        marg = mterm - mi_
+        for d, off in enumerate((1.0, 0.0, -1.0, -2.0)):
+            joint[fi, mi_ - 1 + d] += _bspline3(marg + off)
+
+    total = joint.sum()
+    if total <= 0:
+        return 0.0
+    joint /= total
+    fmarg = joint.sum(axis=1)
+    mmarg = joint.sum(axis=0)
+
+    eps = 1e-16
+    mi = 0.0
+    for i in range(bins):
+        if fmarg[i] <= eps:
+            continue
+        for j in range(bins):
+            jpv = joint[i, j]
+            if jpv > eps and mmarg[j] > eps:
+                mi += jpv * (np.log(jpv / mmarg[j]) - np.log(fmarg[i]))
+    return -mi
+
+
+def _mattes_via_kernel(fixed_win, moving_win, bins):
+    """Run a single window through the kernel by masking only the center voxel.
+
+    The kernel's center voxel sees exactly ``fixed_win`` / ``moving_win`` when
+    the window spans the whole array (radius >= size).
+    """
+    shape = fixed_win.shape
+    mask = np.zeros(shape)
+    c = tuple(s // 2 for s in shape)
+    mask[c] = 1.0
+    big_r = max(shape)
+    MI, *_ = r2d2_rust.compute_r2d2(
+        np.ascontiguousarray(moving_win, dtype=np.float64),   # reg = moving
+        np.ascontiguousarray(fixed_win, dtype=np.float64),    # tmplt = fixed
+        np.ascontiguousarray(mask),
+        big_r,
+        bins=bins,
+        mi_method="mattes",
+    )
+    return MI[c]
+
+
+def test_mattes_matches_python_reference():
+    rng = np.random.default_rng(11)
+    bins = 16
+    for _ in range(5):
+        fixed = rng.normal(size=(7, 7, 7))
+        moving = fixed + 0.5 * rng.normal(size=(7, 7, 7))
+        got = _mattes_via_kernel(fixed, moving, bins)
+        want = _mattes_reference(fixed, moving, bins)
+        assert abs(got - want) < 1e-9, f"{got} vs {want}"
+
+
+def test_mattes_is_negative_and_shift_invariant():
+    reg, tmplt, mask = _random_volumes(seed=5)
+    MI, _, _, dm_MI, _, _ = r2d2_rust.compute_r2d2(
+        reg, tmplt, mask, 3, bins=32, mi_method="mattes"
+    )
+    # ITK convention: metric is <= 0 on the masked voxels.
+    assert np.all(MI[mask == 1] <= 1e-12)
+    # Demeaning is a per-window constant shift -> Mattes MI unchanged.
+    np.testing.assert_allclose(MI, dm_MI, atol=1e-12)
+
+
+@pytest.mark.parametrize("use_sat", [True, False])
+def test_mattes_sat_and_direct_agree(use_sat):
+    reg, tmplt, mask = _random_volumes(seed=6)
+    a = r2d2_rust.compute_r2d2(reg, tmplt, mask, 3, mi_method="mattes", use_sat=True)
+    b = r2d2_rust.compute_r2d2(reg, tmplt, mask, 3, mi_method="mattes", use_sat=False)
+    np.testing.assert_allclose(a[0], b[0], atol=1e-9)  # MI matches across kernels
+
+
+def test_mattes_matches_ants_if_available():
+    """Opt-in parity check against ANTs itself.
+
+    Skipped unless ANTsPy is installed. Compares the kernel's Mattes MI on a
+    single window to ants.image_similarity on the same window arrays, isolating
+    the MI algorithm from cropping/window-size conventions.
+    """
+    ants = pytest.importorskip("ants")
+    rng = np.random.default_rng(21)
+    bins = 32
+    fixed = rng.normal(size=(9, 9, 9))
+    moving = fixed + 0.4 * rng.normal(size=(9, 9, 9))
+
+    got = _mattes_via_kernel(fixed, moving, bins)
+
+    f_img = ants.from_numpy(np.ascontiguousarray(fixed))
+    m_img = ants.from_numpy(np.ascontiguousarray(moving))
+    want = ants.image_similarity(
+        f_img, m_img, metric_type="MattesMutualInformation"
+    )
+    # Tolerance is loose: ANTs' default bin count / sampling may differ.
+    assert abs(got - want) < 5e-2, f"kernel={got} ants={want}"
+
+
 if __name__ == "__main__":
     # Allow running without pytest.
     reg, tmplt, mask = _random_volumes()

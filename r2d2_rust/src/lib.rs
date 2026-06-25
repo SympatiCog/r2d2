@@ -160,7 +160,158 @@ fn mutual_information_approx(a: &ArrayView3<f64>, b: &ArrayView3<f64>, bins: usi
     mi
 }
 
-/// Pure-Rust kernel (no Python types) so it can be unit-tested directly.
+/// Cubic (third-order) B-spline kernel, as used by ITK for the moving-image
+/// Parzen window. Even function; support [-2, 2]; partition of unity.
+#[inline]
+fn bspline3(t: f64) -> f64 {
+    let a = t.abs();
+    if a < 1.0 {
+        (4.0 - 6.0 * a * a + 3.0 * a * a * a) / 6.0
+    } else if a < 2.0 {
+        let b = 2.0 - a;
+        b * b * b / 6.0
+    } else {
+        0.0
+    }
+}
+
+/// Mattes mutual information, faithfully reproducing ITK's
+/// `MattesMutualInformationImageToImageMetric` math (the metric ANTs uses for
+/// `metric_type="MattesMutualInformation"`).
+///
+/// Differences from the fast histogram approximation:
+///   - B-spline Parzen windowing: the fixed image uses a zero-order window
+///     (one bin per sample); the moving image uses a cubic window spread over
+///     four bins.
+///   - ITK's bin layout: `bin_size = range / (bins - 2*padding)` with
+///     `padding = 2`, so two guard bins on each side keep the cubic window in
+///     range.
+///   - Returns the ITK **metric value**, i.e. the *negative* mutual
+///     information (lower = more similar), matching `ants.image_similarity`.
+///
+/// `fixed` is the template, `moving` the registered image — the same argument
+/// order as `ants.image_similarity(template, reg, ...)`.
+///
+/// Because the per-window bin layout rescales by each window's own min/max, a
+/// constant intensity shift leaves the result unchanged (shift-invariant), so
+/// the demeaned variant equals the raw one — as with the approximation.
+fn mattes_mutual_information(
+    fixed: &ArrayView3<f64>,
+    moving: &ArrayView3<f64>,
+    bins: usize,
+) -> f64 {
+    const PADDING: usize = 2;
+    let n = fixed.len();
+    // Need at least one real bin between the guard bins.
+    if n == 0 || bins <= 2 * PADDING {
+        return 0.0;
+    }
+
+    let (mut fmin, mut fmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut mmin, mut mmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &v in fixed.iter() {
+        fmin = fmin.min(v);
+        fmax = fmax.max(v);
+    }
+    for &v in moving.iter() {
+        mmin = mmin.min(v);
+        mmax = mmax.max(v);
+    }
+    // A flat window carries no mutual information.
+    if fmax == fmin || mmax == mmin {
+        return 0.0;
+    }
+
+    let usable = (bins - 2 * PADDING) as f64;
+    let f_bin_size = (fmax - fmin) / usable;
+    let m_bin_size = (mmax - mmin) / usable;
+    let f_norm_min = fmin / f_bin_size - PADDING as f64;
+    let m_norm_min = mmin / m_bin_size - PADDING as f64;
+
+    // joint[fixed_index * bins + moving_index]
+    let mut joint = vec![0.0f64; bins * bins];
+    let lo = 2usize;
+    let hi = bins - 3; // clamp range so the cubic window [idx-1, idx+2] is valid
+
+    for (&fv, &mv) in fixed.iter().zip(moving.iter()) {
+        let f_term = fv / f_bin_size - f_norm_min;
+        let f_index = (f_term.floor() as usize).clamp(lo, hi);
+
+        let m_term = mv / m_bin_size - m_norm_min;
+        let m_index = (m_term.floor() as usize).clamp(lo, hi);
+        let m_arg = m_term - m_index as f64;
+
+        // Cubic Parzen weights for moving bins [m_index-1 .. m_index+2].
+        let w = [
+            bspline3(m_arg + 1.0),
+            bspline3(m_arg),
+            bspline3(m_arg - 1.0),
+            bspline3(m_arg - 2.0),
+        ];
+        let base = f_index * bins + (m_index - 1);
+        joint[base] += w[0];
+        joint[base + 1] += w[1];
+        joint[base + 2] += w[2];
+        joint[base + 3] += w[3];
+    }
+
+    // Normalize to a joint PDF.
+    let total: f64 = joint.iter().sum();
+    if total <= 0.0 {
+        return 0.0;
+    }
+    let inv = 1.0 / total;
+    for p in joint.iter_mut() {
+        *p *= inv;
+    }
+
+    // Marginals (row sums = fixed, column sums = moving).
+    let mut fixed_marg = vec![0.0f64; bins];
+    let mut moving_marg = vec![0.0f64; bins];
+    for i in 0..bins {
+        for j in 0..bins {
+            let p = joint[i * bins + j];
+            fixed_marg[i] += p;
+            moving_marg[j] += p;
+        }
+    }
+
+    const EPS: f64 = 1e-16;
+    let mut mi = 0.0;
+    for i in 0..bins {
+        let fpv = fixed_marg[i];
+        if fpv <= EPS {
+            continue;
+        }
+        let log_fpv = fpv.ln();
+        for j in 0..bins {
+            let jpv = joint[i * bins + j];
+            let mpv = moving_marg[j];
+            if jpv > EPS && mpv > EPS {
+                // jpv * log( jpv / (fpv * mpv) )
+                mi += jpv * ((jpv / mpv).ln() - log_fpv);
+            }
+        }
+    }
+
+    // ITK metric convention: return the negative mutual information.
+    -mi
+}
+
+/// Dispatch the per-window MI computation by method.
+#[inline]
+fn mi_window(
+    win_tmplt: &ArrayView3<f64>,
+    win_reg: &ArrayView3<f64>,
+    bins: usize,
+    mattes: bool,
+) -> f64 {
+    if mattes {
+        mattes_mutual_information(win_tmplt, win_reg, bins)
+    } else {
+        mutual_information_approx(win_tmplt, win_reg, bins)
+    }
+}
 fn compute_r2d2_kernel(
     reg: ArrayView3<f64>,
     tmplt: ArrayView3<f64>,
@@ -168,6 +319,7 @@ fn compute_r2d2_kernel(
     radius: usize,
     bins: usize,
     compute_mi: bool,
+    mattes: bool,
 ) -> R2d2Output {
     let (nx, ny, nz) = reg.dim();
 
@@ -195,12 +347,12 @@ fn compute_r2d2_kernel(
             let mse_raw = mse(&win_tmplt, &win_reg, 0.0, 0.0);
             let corr_raw = correlation(&win_tmplt, &win_reg);
             let mi_raw = if compute_mi {
-                mutual_information_approx(&win_tmplt, &win_reg, bins)
+                mi_window(&win_tmplt, &win_reg, bins, mattes)
             } else {
                 0.0
             };
 
-            // Demeaned metrics: MSE changes; CORR and approx-MI are shift-invariant.
+            // Demeaned metrics: MSE changes; CORR and MI are shift-invariant.
             let mean_reg = mean(&win_reg);
             let mean_tmplt = mean(&win_tmplt);
             let dm_mse = mse(&win_tmplt, &win_reg, mean_tmplt, mean_reg);
@@ -310,6 +462,7 @@ fn compute_r2d2_kernel_sat(
     radius: usize,
     bins: usize,
     compute_mi: bool,
+    mattes: bool,
 ) -> R2d2Output {
     let (nx, ny, nz) = reg.dim();
 
@@ -384,7 +537,7 @@ fn compute_r2d2_kernel_sat(
             let (mi_raw, dm_mi) = if compute_mi {
                 let win_reg = reg.slice(s![x0..x1, y0..y1, z0..z1]);
                 let win_tmplt = tmplt.slice(s![x0..x1, y0..y1, z0..z1]);
-                let mi = mutual_information_approx(&win_tmplt, &win_reg, bins);
+                let mi = mi_window(&win_tmplt, &win_reg, bins, mattes);
                 (mi, mi)
             } else {
                 (0.0, 0.0)
@@ -412,16 +565,20 @@ fn compute_r2d2_kernel_sat(
 ///     tmplt:  template image
 ///     mask:   template mask (voxels == 1 are processed)
 ///     radius: neighborhood half-width (window side = 2*radius + 1)
-///     bins:   histogram bins for the approximate MI (default 32)
+///     bins:   histogram bins for MI (default 32; for "mattes" this is the
+///             number of ITK histogram bins, must be > 4)
 ///     compute_mi: if False, skip MI and return zeros for MI/dm_MI
 ///     use_sat: if True (default), use the summed-area-table kernel — MSE/CORR
 ///              become O(1) per voxel regardless of radius. If False, use the
 ///              direct per-window kernel (handy for validation).
+///     mi_method: "approx" (default; fast positive histogram MI) or "mattes"
+///              (ITK-faithful Mattes MI, returns the negative-MI metric value
+///              matching ants.image_similarity).
 ///
 /// Returns a 6-tuple of float64 arrays:
 ///     (MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR)
 #[pyfunction]
-#[pyo3(signature = (reg, tmplt, mask, radius, bins=32, compute_mi=true, use_sat=true))]
+#[pyo3(signature = (reg, tmplt, mask, radius, bins=32, compute_mi=true, use_sat=true, mi_method="approx"))]
 #[allow(clippy::too_many_arguments)]
 fn compute_r2d2<'py>(
     py: Python<'py>,
@@ -432,6 +589,7 @@ fn compute_r2d2<'py>(
     bins: usize,
     compute_mi: bool,
     use_sat: bool,
+    mi_method: &str,
 ) -> PyResult<(
     Bound<'py, PyArray3<f64>>,
     Bound<'py, PyArray3<f64>>,
@@ -447,6 +605,21 @@ fn compute_r2d2<'py>(
         ));
     }
 
+    let mattes = match mi_method {
+        "approx" => false,
+        "mattes" => true,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "mi_method must be 'approx' or 'mattes', got '{other}'"
+            )))
+        }
+    };
+    if mattes && compute_mi && bins <= 4 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "mattes MI needs bins > 4 (two guard bins on each side)",
+        ));
+    }
+
     // Own the data so the kernel can run with the GIL released.
     let reg = reg.as_array().to_owned();
     let tmplt = tmplt.as_array().to_owned();
@@ -454,9 +627,25 @@ fn compute_r2d2<'py>(
 
     let out = py.allow_threads(move || {
         if use_sat {
-            compute_r2d2_kernel_sat(reg.view(), tmplt.view(), mask.view(), radius, bins, compute_mi)
+            compute_r2d2_kernel_sat(
+                reg.view(),
+                tmplt.view(),
+                mask.view(),
+                radius,
+                bins,
+                compute_mi,
+                mattes,
+            )
         } else {
-            compute_r2d2_kernel(reg.view(), tmplt.view(), mask.view(), radius, bins, compute_mi)
+            compute_r2d2_kernel(
+                reg.view(),
+                tmplt.view(),
+                mask.view(),
+                radius,
+                bins,
+                compute_mi,
+                mattes,
+            )
         }
     });
 
@@ -509,7 +698,7 @@ mod tests {
         let mut mask = Array3::zeros((nx, nx, nx));
         mask[[2, 2, 2]] = 1.0;
 
-        let out = compute_r2d2_kernel(reg.view(), tmplt.view(), mask.view(), 1, 32, true);
+        let out = compute_r2d2_kernel(reg.view(), tmplt.view(), mask.view(), 1, 32, true, false);
 
         // Identical inputs => zero MSE at the masked voxel, and untouched
         // (zero) everywhere else.
@@ -534,8 +723,17 @@ mod tests {
         let mask = Array3::from_elem((n, n, n), 1.0);
         let radius = 3;
 
-        let direct = compute_r2d2_kernel(reg.view(), tmplt.view(), mask.view(), radius, 32, true);
-        let sat = compute_r2d2_kernel_sat(reg.view(), tmplt.view(), mask.view(), radius, 32, true);
+        let direct =
+            compute_r2d2_kernel(reg.view(), tmplt.view(), mask.view(), radius, 32, true, false);
+        let sat = compute_r2d2_kernel_sat(
+            reg.view(),
+            tmplt.view(),
+            mask.view(),
+            radius,
+            32,
+            true,
+            false,
+        );
 
         let max_diff = |a: &Array3<f64>, b: &Array3<f64>| {
             a.iter()
@@ -550,5 +748,52 @@ mod tests {
         assert!(max_diff(&sat.dm_mse, &direct.dm_mse) < 1e-9, "dm_MSE mismatch");
         assert!(max_diff(&sat.corr, &direct.corr) < 1e-9, "CORR mismatch");
         assert!(max_diff(&sat.mi, &direct.mi) < 1e-12, "MI mismatch");
+    }
+
+    #[test]
+    fn bspline3_is_partition_of_unity() {
+        // The four cubic weights around any fractional offset sum to 1.
+        for step in 0..10 {
+            let arg = step as f64 / 10.0; // in [0, 1)
+            let s = bspline3(arg + 1.0) + bspline3(arg) + bspline3(arg - 1.0) + bspline3(arg - 2.0);
+            assert!((s - 1.0).abs() < 1e-12, "weights sum to {s}");
+        }
+    }
+
+    #[test]
+    fn mattes_mi_ranks_similarity() {
+        // Identical images share maximal information -> most-negative metric;
+        // an independent pairing -> metric near zero. So identical < independent.
+        let n = 10;
+        let a = Array3::from_shape_fn((n, n, n), |(i, j, k)| ((i * 3 + j * 5 + k * 7) % 11) as f64);
+        let b_indep =
+            Array3::from_shape_fn((n, n, n), |(i, j, k)| ((i * 13 + j * 2 + k * 17) % 11) as f64);
+
+        let same = mattes_mutual_information(&a.view(), &a.view(), 16);
+        let indep = mattes_mutual_information(&a.view(), &b_indep.view(), 16);
+
+        assert!(same <= 0.0, "metric should be <= 0, got {same}");
+        assert!(same < indep, "identical ({same}) should beat independent ({indep})");
+    }
+
+    #[test]
+    fn mattes_mi_is_shift_invariant() {
+        // Adding a constant to all moving voxels leaves the metric unchanged,
+        // because the per-window bin layout rescales by the window's own range.
+        let n = 8;
+        let f = Array3::from_shape_fn((n, n, n), |(i, j, k)| ((i + 2 * j + 3 * k) % 7) as f64);
+        let m = Array3::from_shape_fn((n, n, n), |(i, j, k)| ((2 * i + j + k) % 5) as f64);
+        let m_shift = &m + 123.456;
+
+        let base = mattes_mutual_information(&f.view(), &m.view(), 16);
+        let shifted = mattes_mutual_information(&f.view(), &m_shift.view(), 16);
+        assert!((base - shifted).abs() < 1e-9, "shift changed MI: {base} vs {shifted}");
+    }
+
+    #[test]
+    fn mattes_mi_flat_window_is_zero() {
+        let f = Array3::from_elem((4, 4, 4), 5.0); // constant
+        let m = Array3::from_shape_fn((4, 4, 4), |(i, _, _)| i as f64);
+        assert_eq!(mattes_mutual_information(&f.view(), &m.view(), 16), 0.0);
     }
 }
