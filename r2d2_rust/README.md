@@ -21,6 +21,10 @@ existing pipeline.
 - **True threads** — the loop runs with the GIL released via rayon, composing
   with Python-side process/thread parallelism.
 
+On top of that, the default kernel uses **summed-area tables (integral images)**
+so MSE and Correlation cost O(1) per voxel *regardless of radius* — this stacks
+with the language speedup (see "Summed-area-table kernel" below).
+
 MSE and Correlation match ANTs/numpy to floating point. MI uses the same fast
 histogram approximation as the Numba path (see "Mutual information" below).
 
@@ -33,7 +37,8 @@ r2d2_rust/
 ├── src/lib.rs              # kernel + PyO3 bindings + Rust unit tests
 ├── python/r2d2_rust/       # Python package (ANTs-aware wrapper)
 │   └── __init__.py
-└── tests/test_kernel.py    # validation vs. a pure-numpy reference
+├── tests/test_kernel.py    # validation vs. a pure-numpy reference
+└── benchmark_sat.py        # SAT vs. direct-kernel timing
 ```
 
 ## Build & install
@@ -56,7 +61,7 @@ Array-in / array-out (no ANTs):
 import numpy as np, r2d2_rust
 # reg/tmplt/mask are 3D float64 numpy arrays of identical shape
 MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
-    reg, tmplt, mask, radius=3, bins=32, compute_mi=True
+    reg, tmplt, mask, radius=3, bins=32, compute_mi=True, use_sat=True
 )
 ```
 
@@ -87,6 +92,33 @@ maturin develop --release
 pytest tests/test_kernel.py -v
 ```
 
+## Summed-area-table kernel
+
+The default kernel (`use_sat=True`) builds five 3D prefix-sum tables
+(`sum r`, `sum t`, `sum r²`, `sum t²`, `sum r·t`) once, then derives every
+window's MSE, Correlation, and demeaned variants from eight corner lookups —
+O(1) per voxel instead of O(radius³). Each image is centered by its global mean
+before squaring so the variance/covariance stay numerically stable; raw MSE is
+restored exactly via a mean-difference term.
+
+MI is the one metric that can't use prefix sums (it needs the per-window joint
+histogram), so it still extracts each window when `compute_mi=True`. The SAT win
+is largest with `compute_mi=False` or large radius. Pass `use_sat=False` to fall
+back to the direct per-window kernel (used as the validation reference).
+
+Benchmark (`benchmark_sat.py`, 91×109×91 volume, ~650k masked voxels,
+`compute_mi=False`):
+
+| radius | direct (s) | SAT (s) | speedup |
+|-------:|-----------:|--------:|--------:|
+| 2 | 0.54 | 0.13 | 4.1x |
+| 3 | 1.24 | 0.13 | 9.8x |
+| 5 | 4.44 | 0.12 | 36.5x |
+| 8 | 15.37 | 0.13 | 117.2x |
+
+SAT wall-clock is flat in radius; the direct kernel grows ~radius³. (Numbers
+will vary with core count.)
+
 ## Mutual information
 
 `compute_r2d2` computes a histogram-based **approximation** of MI, matching
@@ -104,8 +136,7 @@ If you need exact ANTs agreement, two paths:
 
 ## Possible next steps
 
-- **Integral images / summed-area tables** make MSE and Correlation O(1) per
-  voxel regardless of radius — a large win that stacks with the language change.
-  (MI can't use this trick; it needs the joint histogram per window.)
-- Native Mattes MI for exact ANTs parity.
+- Native Mattes MI for exact ANTs parity (the one metric still computed
+  per-window).
 - f32 input support to halve memory traffic.
+- Parallelize the prefix-sum build (currently a single O(voxels) pass).

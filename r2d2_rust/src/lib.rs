@@ -217,6 +217,12 @@ fn compute_r2d2_kernel(
         })
         .collect();
 
+    scatter(nx, ny, nz, results)
+}
+
+/// Scatter per-voxel results into six zero-initialized volumes. Shared by both
+/// the direct and summed-area-table kernels.
+fn scatter(nx: usize, ny: usize, nz: usize, results: Vec<VoxelResult>) -> R2d2Output {
     let mut out = R2d2Output {
         mi: Array3::zeros((nx, ny, nz)),
         mse: Array3::zeros((nx, ny, nz)),
@@ -245,6 +251,160 @@ fn compute_r2d2_kernel(
     out
 }
 
+/// Build a 3D summed-area table (prefix sum) of shape (nx+1, ny+1, nz+1) where
+/// `p[i,j,k]` is the sum of `f` over the half-open box [0,i) x [0,j) x [0,k).
+fn build_sat<F: Fn(usize, usize, usize) -> f64>(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    f: F,
+) -> Array3<f64> {
+    let mut p = Array3::<f64>::zeros((nx + 1, ny + 1, nz + 1));
+    for i in 1..=nx {
+        for j in 1..=ny {
+            for k in 1..=nz {
+                let v = f(i - 1, j - 1, k - 1);
+                p[[i, j, k]] = v
+                    + p[[i - 1, j, k]]
+                    + p[[i, j - 1, k]]
+                    + p[[i, j, k - 1]]
+                    - p[[i - 1, j - 1, k]]
+                    - p[[i - 1, j, k - 1]]
+                    - p[[i, j - 1, k - 1]]
+                    + p[[i - 1, j - 1, k - 1]];
+            }
+        }
+    }
+    p
+}
+
+/// Sum of the underlying values over the half-open window
+/// [x0,x1) x [y0,y1) x [z0,z1), via 8-corner inclusion-exclusion. O(1).
+#[inline]
+fn window_sum(
+    p: &Array3<f64>,
+    x0: usize,
+    x1: usize,
+    y0: usize,
+    y1: usize,
+    z0: usize,
+    z1: usize,
+) -> f64 {
+    p[[x1, y1, z1]] - p[[x0, y1, z1]] - p[[x1, y0, z1]] - p[[x1, y1, z0]]
+        + p[[x0, y0, z1]]
+        + p[[x0, y1, z0]]
+        + p[[x1, y0, z0]]
+        - p[[x0, y0, z0]]
+}
+
+/// Summed-area-table kernel: MSE/Correlation (and their demeaned variants) in
+/// O(1) per voxel regardless of `radius`, instead of O(radius^3) per voxel.
+///
+/// MI cannot use prefix sums — it needs the per-window joint histogram — so it
+/// still extracts each window when `compute_mi` is set. The big win is for
+/// `compute_mi=false` (or large radius), where the whole pass becomes O(voxels).
+fn compute_r2d2_kernel_sat(
+    reg: ArrayView3<f64>,
+    tmplt: ArrayView3<f64>,
+    mask: ArrayView3<f64>,
+    radius: usize,
+    bins: usize,
+    compute_mi: bool,
+) -> R2d2Output {
+    let (nx, ny, nz) = reg.dim();
+
+    // Center each image by its global mean before squaring/multiplying, so the
+    // prefix sums stay well-conditioned (centered values are near zero, which
+    // avoids catastrophic cancellation in var = E[x^2] - E[x]^2). Raw MSE is
+    // restored exactly via the mean-difference term below.
+    let n_total = (nx * ny * nz).max(1) as f64;
+    let cr = reg.iter().sum::<f64>() / n_total;
+    let ct = tmplt.iter().sum::<f64>() / n_total;
+    let dmean = ct - cr;
+
+    // Five prefix sums over the centered values: sum r', sum t', sum r'^2,
+    // sum t'^2, sum r'*t'.
+    let sat_r = build_sat(nx, ny, nz, |i, j, k| reg[[i, j, k]] - cr);
+    let sat_t = build_sat(nx, ny, nz, |i, j, k| tmplt[[i, j, k]] - ct);
+    let sat_rr = build_sat(nx, ny, nz, |i, j, k| {
+        let v = reg[[i, j, k]] - cr;
+        v * v
+    });
+    let sat_tt = build_sat(nx, ny, nz, |i, j, k| {
+        let v = tmplt[[i, j, k]] - ct;
+        v * v
+    });
+    let sat_rt =
+        build_sat(nx, ny, nz, |i, j, k| (reg[[i, j, k]] - cr) * (tmplt[[i, j, k]] - ct));
+
+    let coords: Vec<(usize, usize, usize)> = mask
+        .indexed_iter()
+        .filter(|(_, &m)| m == 1.0)
+        .map(|((x, y, z), _)| (x, y, z))
+        .collect();
+
+    let results: Vec<VoxelResult> = coords
+        .par_iter()
+        .map(|&(x, y, z)| {
+            let x0 = x.saturating_sub(radius);
+            let y0 = y.saturating_sub(radius);
+            let z0 = z.saturating_sub(radius);
+            let x1 = (x + radius + 1).min(nx);
+            let y1 = (y + radius + 1).min(ny);
+            let z1 = (z + radius + 1).min(nz);
+
+            let n = ((x1 - x0) * (y1 - y0) * (z1 - z0)) as f64;
+            let a = window_sum(&sat_r, x0, x1, y0, y1, z0, z1); // sum r'
+            let b = window_sum(&sat_t, x0, x1, y0, y1, z0, z1); // sum t'
+            let arr = window_sum(&sat_rr, x0, x1, y0, y1, z0, z1); // sum r'^2
+            let btt = window_sum(&sat_tt, x0, x1, y0, y1, z0, z1); // sum t'^2
+            let crt = window_sum(&sat_rt, x0, x1, y0, y1, z0, z1); // sum r'*t'
+
+            let mean_r = a / n;
+            let mean_t = b / n;
+            let var_r = (arr / n - mean_r * mean_r).max(0.0);
+            let var_t = (btt / n - mean_t * mean_t).max(0.0);
+            let cov = crt / n - mean_r * mean_t;
+
+            // Raw MSE = mean((t - r)^2). With t = t' + ct and r = r' + cr,
+            // t - r = (t' - r') + dmean, so expand the square.
+            let mse_raw =
+                (btt - 2.0 * crt + arr) / n + 2.0 * dmean * (b - a) / n + dmean * dmean;
+            // Demeaned MSE = var_t - 2*cov + var_r.
+            let dm_mse = (var_t - 2.0 * cov + var_r).max(0.0);
+
+            // Correlation is shift-invariant, so dm_corr == corr.
+            let corr = if var_r > 0.0 && var_t > 0.0 {
+                (cov / (var_r.sqrt() * var_t.sqrt())).clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+
+            // MI still needs the actual window (no prefix-sum shortcut).
+            let (mi_raw, dm_mi) = if compute_mi {
+                let win_reg = reg.slice(s![x0..x1, y0..y1, z0..z1]);
+                let win_tmplt = tmplt.slice(s![x0..x1, y0..y1, z0..z1]);
+                let mi = mutual_information_approx(&win_tmplt, &win_reg, bins);
+                (mi, mi)
+            } else {
+                (0.0, 0.0)
+            };
+
+            VoxelResult {
+                idx: x * ny * nz + y * nz + z,
+                mi: mi_raw,
+                mse: mse_raw.max(0.0),
+                corr,
+                dm_mi,
+                dm_mse,
+                dm_corr: corr,
+            }
+        })
+        .collect();
+
+    scatter(nx, ny, nz, results)
+}
+
 /// Compute the six R2D2 metric volumes for one subject.
 ///
 /// Args (all 3D float64 arrays of identical shape):
@@ -254,11 +414,14 @@ fn compute_r2d2_kernel(
 ///     radius: neighborhood half-width (window side = 2*radius + 1)
 ///     bins:   histogram bins for the approximate MI (default 32)
 ///     compute_mi: if False, skip MI and return zeros for MI/dm_MI
+///     use_sat: if True (default), use the summed-area-table kernel — MSE/CORR
+///              become O(1) per voxel regardless of radius. If False, use the
+///              direct per-window kernel (handy for validation).
 ///
 /// Returns a 6-tuple of float64 arrays:
 ///     (MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR)
 #[pyfunction]
-#[pyo3(signature = (reg, tmplt, mask, radius, bins=32, compute_mi=true))]
+#[pyo3(signature = (reg, tmplt, mask, radius, bins=32, compute_mi=true, use_sat=true))]
 #[allow(clippy::too_many_arguments)]
 fn compute_r2d2<'py>(
     py: Python<'py>,
@@ -268,6 +431,7 @@ fn compute_r2d2<'py>(
     radius: usize,
     bins: usize,
     compute_mi: bool,
+    use_sat: bool,
 ) -> PyResult<(
     Bound<'py, PyArray3<f64>>,
     Bound<'py, PyArray3<f64>>,
@@ -289,14 +453,11 @@ fn compute_r2d2<'py>(
     let mask = mask.as_array().to_owned();
 
     let out = py.allow_threads(move || {
-        compute_r2d2_kernel(
-            reg.view(),
-            tmplt.view(),
-            mask.view(),
-            radius,
-            bins,
-            compute_mi,
-        )
+        if use_sat {
+            compute_r2d2_kernel_sat(reg.view(), tmplt.view(), mask.view(), radius, bins, compute_mi)
+        } else {
+            compute_r2d2_kernel(reg.view(), tmplt.view(), mask.view(), radius, bins, compute_mi)
+        }
     });
 
     Ok((
@@ -358,5 +519,36 @@ mod tests {
         assert!((out.corr[[2, 2, 2]] - 1.0).abs() < 1e-9);
         // Unmasked voxel stays at the initialized zero.
         assert_eq!(out.corr[[0, 0, 0]], 0.0);
+    }
+
+    #[test]
+    fn sat_matches_direct_kernel() {
+        // Deterministic, non-trivial data so variance/covariance are nonzero.
+        let n = 12;
+        let reg = Array3::from_shape_fn((n, n, n), |(i, j, k)| {
+            ((i * 7 + j * 13 + k * 17) % 23) as f64 + 0.5 * (i as f64) - 0.25 * (k as f64)
+        });
+        let tmplt = Array3::from_shape_fn((n, n, n), |(i, j, k)| {
+            ((i * 5 + j * 11 + k * 3) % 19) as f64 - 0.3 * (j as f64)
+        });
+        let mask = Array3::from_elem((n, n, n), 1.0);
+        let radius = 3;
+
+        let direct = compute_r2d2_kernel(reg.view(), tmplt.view(), mask.view(), radius, 32, true);
+        let sat = compute_r2d2_kernel_sat(reg.view(), tmplt.view(), mask.view(), radius, 32, true);
+
+        let max_diff = |a: &Array3<f64>, b: &Array3<f64>| {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f64, f64::max)
+        };
+
+        // SAT computes the same MSE/CORR via prefix sums (looser tol for the
+        // different summation order), and MI identically (same per-window code).
+        assert!(max_diff(&sat.mse, &direct.mse) < 1e-9, "MSE mismatch");
+        assert!(max_diff(&sat.dm_mse, &direct.dm_mse) < 1e-9, "dm_MSE mismatch");
+        assert!(max_diff(&sat.corr, &direct.corr) < 1e-9, "CORR mismatch");
+        assert!(max_diff(&sat.mi, &direct.mi) < 1e-12, "MI mismatch");
     }
 }

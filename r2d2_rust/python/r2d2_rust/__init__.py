@@ -30,6 +30,7 @@ def compute_r2d2_rust(
     subsess: str = "unknown",
     bins: int = 32,
     compute_mi: bool = True,
+    use_sat: bool = True,
 ) -> dict:
     """Compute R2D2 metrics from ANTs images, returning ANTs images.
 
@@ -42,6 +43,9 @@ def compute_r2d2_rust(
         subsess: subject/session id, used only in error messages.
         bins: histogram bins for the approximate MI.
         compute_mi: if False, MI / dm_MI come back as zeros (cheaper).
+        use_sat: if True (default), use the summed-area-table kernel so MSE/CORR
+            cost O(1) per voxel regardless of radius. False uses the direct
+            per-window kernel (validation/reference).
 
     Returns:
         dict keyed by MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR; each value is an
@@ -66,7 +70,13 @@ def compute_r2d2_rust(
 
     try:
         arrays = compute_r2d2(
-            reg_arr, tmplt_arr, mask_arr, int(radius), int(bins), bool(compute_mi)
+            reg_arr,
+            tmplt_arr,
+            mask_arr,
+            int(radius),
+            int(bins),
+            bool(compute_mi),
+            bool(use_sat),
         )
     except Exception as e:  # surface which subject failed, then re-raise
         print(f"r2d2_rust failed on {subsess}: {e}")

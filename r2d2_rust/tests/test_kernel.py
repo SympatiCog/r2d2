@@ -49,17 +49,41 @@ def _random_volumes(shape=(20, 18, 16), seed=0):
     )
 
 
-def test_mse_and_corr_match_reference():
+@pytest.mark.parametrize("use_sat", [True, False])
+def test_mse_and_corr_match_reference(use_sat):
     reg, tmplt, mask = _random_volumes()
     radius = 3
     MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
-        reg, tmplt, mask, radius
+        reg, tmplt, mask, radius, use_sat=use_sat
     )
     ref_mse, ref_corr, ref_dm_mse = _reference(reg, tmplt, mask, radius)
 
-    np.testing.assert_allclose(MSE, ref_mse, atol=1e-10)
-    np.testing.assert_allclose(dm_MSE, ref_dm_mse, atol=1e-10)
-    np.testing.assert_allclose(CORR, ref_corr, atol=1e-10)
+    # The SAT kernel sums in a different order, so allow a slightly looser tol.
+    atol = 1e-8 if use_sat else 1e-10
+    np.testing.assert_allclose(MSE, ref_mse, atol=atol)
+    np.testing.assert_allclose(dm_MSE, ref_dm_mse, atol=atol)
+    np.testing.assert_allclose(CORR, ref_corr, atol=atol)
+
+
+def test_sat_matches_direct():
+    """The SAT and direct kernels must agree on every metric."""
+    reg, tmplt, mask = _random_volumes(seed=7)
+    radius = 4
+    sat = r2d2_rust.compute_r2d2(reg, tmplt, mask, radius, use_sat=True)
+    direct = r2d2_rust.compute_r2d2(reg, tmplt, mask, radius, use_sat=False)
+    for s, d in zip(sat, direct):
+        np.testing.assert_allclose(s, d, atol=1e-8)
+
+
+def test_sat_radius_independence():
+    """SAT results are exact for any radius, including a radius that spans the
+    whole volume (every window is the full image)."""
+    reg, tmplt, mask = _random_volumes(shape=(10, 10, 10), seed=9)
+    big_r = 50  # larger than the volume -> every window is the entire image
+    _, MSE, CORR, _, _, _ = r2d2_rust.compute_r2d2(reg, tmplt, mask, big_r)
+    ref_mse, ref_corr, _ = _reference(reg, tmplt, mask, big_r)
+    np.testing.assert_allclose(MSE, ref_mse, atol=1e-8)
+    np.testing.assert_allclose(CORR, ref_corr, atol=1e-8)
 
 
 def test_corr_is_shift_invariant():
