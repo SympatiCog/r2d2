@@ -161,7 +161,9 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
         ants.image_write(v, outpath)
 
 
-def _run_compute(img_dict: dict, radius, subsess: str, backend: str = "auto") -> dict:
+def _run_compute(
+    img_dict: dict, radius, subsess: str, backend: str = "auto", mi_method: str = "mattes"
+) -> dict:
     """Dispatch R2D2 computation to the selected backend.
 
     backend:
@@ -169,8 +171,10 @@ def _run_compute(img_dict: dict, radius, subsess: str, backend: str = "auto") ->
         "rust"   - require the Rust extension (error if missing)
         "python" - force the pure-Python compute_r2d2
 
-    The Rust path uses mi_method="mattes" so its MI matches the ANTs/ITK
-    convention (negative mutual information) of the pure-Python path.
+    mi_method (Rust backend only):
+        "mattes" - ITK-faithful Mattes MI matching ANTs (default; accurate)
+        "approx" - fast histogram MI (~3x faster; coarser). The pure-Python
+                   backend always uses ANTs Mattes and ignores this.
     """
     use_rust = backend == "rust" or (backend == "auto" and _HAVE_RUST)
     if use_rust:
@@ -181,7 +185,7 @@ def _run_compute(img_dict: dict, radius, subsess: str, backend: str = "auto") ->
                 "backend='auto'/'python'."
             )
         return compute_r2d2_rust(
-            img_dict, radius=radius, subsess=subsess, mi_method="mattes"
+            img_dict, radius=radius, subsess=subsess, mi_method=mi_method
         )
     return compute_r2d2(img_dict, radius=radius, subsess=subsess)
 
@@ -192,6 +196,7 @@ def main(
     template_path: str = None,
     radius=3,
     backend: str = "auto",
+    mi_method: str = "mattes",
 ) -> dict:
     """
     Main function.
@@ -200,6 +205,7 @@ def main(
     :param reg_image_name: name of the registered image
     :param template_path: path to the template
     :param backend: compute backend - "auto" (Rust if available), "rust", or "python"
+    :param mi_method: Rust-backend MI - "mattes" (accurate) or "approx" (~3x faster)
     """
     if template_path is None:
         raise ValueError("template_path is required. Please specify --template_path when running from command line.")
@@ -209,7 +215,9 @@ def main(
         reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
     )
     subsess = sub_folder.split("/")[-1]
-    r2d2 = _run_compute(img_dict, radius=radius, subsess=subsess, backend=backend)
+    r2d2 = _run_compute(
+        img_dict, radius=radius, subsess=subsess, backend=backend, mi_method=mi_method
+    )
     if type(r2d2) is dict:
         save_images(sub_folder, r2d2, radius)
         res = {"subsess": subsess}
@@ -227,6 +235,7 @@ def main_wrapper(
     template_path: str = None,
     radius=3,
     backend: str = "auto",
+    mi_method: str = "mattes",
 ) -> dict:
     """
     Wrapper for main function that catches exceptions for parallel processing.
@@ -236,11 +245,12 @@ def main_wrapper(
     :param template_path: path to the template
     :param radius: search radius for r2d2 computation
     :param backend: compute backend - "auto", "rust", or "python"
+    :param mi_method: Rust-backend MI - "mattes" or "approx"
     :return: dict with success/error information
     """
     subsess = sub_folder.split("/")[-1]
     try:
-        res = main(sub_folder, reg_image_name, template_path, radius, backend)
+        res = main(sub_folder, reg_image_name, template_path, radius, backend, mi_method)
         if isinstance(res, dict):
             return res
         else:
@@ -355,6 +365,14 @@ def get_args():
         help="Compute backend: 'auto' uses the Rust extension if installed else pure Python; 'rust' requires it; 'python' forces pure Python. default=auto",
     )
 
+    parser.add_argument(
+        "--mi-method",
+        dest="mi_method",
+        default="mattes",
+        choices=["mattes", "approx"],
+        help="MI for the Rust backend: 'mattes' is ITK/ANTs-faithful (accurate); 'approx' is a fast histogram MI (~3x faster, coarser). The python backend always uses ANTs Mattes. default=mattes",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -386,7 +404,8 @@ if __name__ == "__main__":
 
     # Create wrapper function to pass template_path
     def main_wrapper(sub_folder):
-        return main(sub_folder, template_path=args.template_path, radius=args.radius, backend=args.backend)
+        return main(sub_folder, template_path=args.template_path, radius=args.radius,
+                    backend=args.backend, mi_method=args.mi_method)
 
     with Pool(args.num_python_jobs) as pool:
         res = pool.map(main_wrapper, flist)

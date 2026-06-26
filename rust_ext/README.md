@@ -93,8 +93,29 @@ python r2d2_base.py  ... --backend python  # force pure Python
 python r2d2_numba.py ... --backend numba   # force the Numba kernel
 ```
 
-When the Rust backend is used, MI is computed with `mi_method="mattes"` so its
-sign convention matches the ANTs-based pipelines (negative = more similar).
+MI dominates per-subject runtime, and the Rust backend defaults to the accurate
+ITK-faithful Mattes MI. If approximate MI is acceptable for your QC, it is ~3x
+faster — select it with `--mi-method approx` (r2d2_base.py) or `--use-numba-mi`
+(r2d2_numba.py, which routes the Rust backend to approx too):
+
+```bash
+python r2d2_base.py ... --backend rust --mi-method approx   # fastest
+python r2d2_base.py ... --backend rust --mi-method mattes   # ANTs-faithful (default)
+```
+
+### Threads
+
+The kernel parallelizes per-voxel work across cores via rayon with the GIL
+released. When you also run a process pool (`--num_python_jobs N`), each process
+spawns rayon threads across *all* cores, which oversubscribes. Pin the kernel to
+one thread per process and let the pool own the parallelism:
+
+```bash
+RAYON_NUM_THREADS=1 python r2d2_base.py ... --backend rust --num_python_jobs 8
+```
+
+For a single subject (or few), leave `RAYON_NUM_THREADS` unset so rayon uses all
+cores per call.
 
 ## Testing
 
