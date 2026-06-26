@@ -218,10 +218,13 @@ def compute_r2d2_kernel(
                 roi_reg = reg_arr[x_min:x_max, y_min:y_max, z_min:z_max]
                 roi_tmplt = tmplt_arr[x_min:x_max, y_min:y_max, z_min:z_max]
 
-                # Compute metrics
+                # Compute metrics. MSE is the *demeaned* MSE (each window
+                # centered to its own mean), so it ignores a constant offset.
                 if compute_mi:
                     MI[x, y, z] = compute_mutual_information_approx(roi_tmplt, roi_reg)
-                MSE[x, y, z] = compute_mse(roi_tmplt, roi_reg)
+                MSE[x, y, z] = compute_mse(
+                    roi_tmplt - np.mean(roi_tmplt), roi_reg - np.mean(roi_reg)
+                )
                 CORR[x, y, z] = compute_correlation(roi_tmplt, roi_reg)
 
     return MI, MSE, CORR
@@ -437,7 +440,8 @@ def _wholebrain_metrics(template, reg_image, mask, bins: int = 32) -> dict:
     rv = r[sel]
     if tv.size == 0:
         return {"MI": np.nan, "MSE": np.nan, "CORR": np.nan}
-    mse = float(np.mean((tv - rv) ** 2))
+    # Demeaned MSE (center each image to its own mean), matching the maps.
+    mse = float(np.mean(((tv - tv.mean()) - (rv - rv.mean())) ** 2))
     corr = float(np.corrcoef(tv, rv)[0, 1]) if tv.std() > 0 and rv.std() > 0 else 0.0
     mi = _approx_mi(tv, rv, bins=bins)
     return {"MI": mi, "MSE": mse, "CORR": corr}

@@ -27,7 +27,9 @@ For each voxel within the brain mask:
 1. Extract a local neighborhood (radius-based ROI) from both template and registered image
 2. Compute similarity between neighborhoods using three metrics:
     * **Mattes Mutual Information** (MI): Information-theoretic similarity
-    * **Mean Squares Error** (MSE): Intensity difference
+    * **Mean Squares Error** (MSE): *Demeaned* squared difference — each
+      neighborhood is centered to its own mean first, so MSE ignores a constant
+      intensity offset and reflects structural mismatch
     * **Correlation** (CORR): Linear relationship strength
 3. Output voxelwise maps and summary statistics
 

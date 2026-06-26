@@ -18,7 +18,7 @@ The codebase consists of a single module with the following pipeline:
 2. **R2D2 Computation** (`compute_r2d2`): Triple-nested loop over all voxels (x, y, z)
    - For each masked voxel, crops a local neighborhood (radius-based ROI)
    - Computes 3 similarity metrics between template and registered image:
-     - MI, MSE, CORR
+     - MI (natural, >=0), MSE (demeaned — each window centered first), CORR (Pearson)
    - Uses ANTs `image_similarity` with metric types: MattesMutualInformation, MeanSquares, Correlation
 3. **Statistics** (`comp_stats`): Computes mean, std, z-scores for each metric, plus whole-brain similarity
 4. **Save Results** (`save_images`): Outputs NIfTI files for each metric

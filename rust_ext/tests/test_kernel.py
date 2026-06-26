@@ -27,7 +27,8 @@ def _reference(reg, tmplt, mask, radius):
         z0, z1 = max(0, z - radius), min(nz, z + radius + 1)
         wr = reg[x0:x1, y0:y1, z0:z1].ravel()
         wt = tmplt[x0:x1, y0:y1, z0:z1].ravel()
-        mse[x, y, z] = np.mean((wt - wr) ** 2)
+        # Demeaned MSE: center each window to its own mean first.
+        mse[x, y, z] = np.mean(((wt - wt.mean()) - (wr - wr.mean())) ** 2)
         if wt.std() > 0 and wr.std() > 0:
             corr[x, y, z] = np.corrcoef(wt, wr)[0, 1]
     return mse, corr

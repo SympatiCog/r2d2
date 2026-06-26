@@ -342,7 +342,11 @@ fn compute_r2d2_kernel(
             let win_tmplt = tmplt.slice(s![x0..x1, y0..y1, z0..z1]);
 
             // Metrics: template vs registered, matching the Python arg order.
-            let mse_raw = mse(&win_tmplt, &win_reg, 0.0, 0.0);
+            // MSE is the *demeaned* MSE (each window centered to its own mean
+            // first) so it is invariant to a constant intensity offset.
+            let mean_tmplt = mean(&win_tmplt);
+            let mean_reg = mean(&win_reg);
+            let mse_dm = mse(&win_tmplt, &win_reg, mean_tmplt, mean_reg);
             let corr_raw = correlation(&win_tmplt, &win_reg);
             let mi_raw = if compute_mi {
                 mi_window(&win_tmplt, &win_reg, bins, mattes)
@@ -353,7 +357,7 @@ fn compute_r2d2_kernel(
             VoxelResult {
                 idx: x * ny * nz + y * nz + z,
                 mi: mi_raw,
-                mse: mse_raw,
+                mse: mse_dm,
                 corr: corr_raw,
             }
         })
@@ -449,12 +453,10 @@ fn compute_r2d2_kernel_sat(
 
     // Center each image by its global mean before squaring/multiplying, so the
     // prefix sums stay well-conditioned (centered values are near zero, which
-    // avoids catastrophic cancellation in var = E[x^2] - E[x]^2). Raw MSE is
-    // restored exactly via the mean-difference term below.
+    // avoids catastrophic cancellation in var = E[x^2] - E[x]^2).
     let n_total = (nx * ny * nz).max(1) as f64;
     let cr = reg.iter().sum::<f64>() / n_total;
     let ct = tmplt.iter().sum::<f64>() / n_total;
-    let dmean = ct - cr;
 
     // Five prefix sums over the centered values: sum r', sum t', sum r'^2,
     // sum t'^2, sum r'*t'.
@@ -500,10 +502,9 @@ fn compute_r2d2_kernel_sat(
             let var_t = (btt / n - mean_t * mean_t).max(0.0);
             let cov = crt / n - mean_r * mean_t;
 
-            // Raw MSE = mean((t - r)^2). With t = t' + ct and r = r' + cr,
-            // t - r = (t' - r') + dmean, so expand the square.
-            let mse_raw =
-                (btt - 2.0 * crt + arr) / n + 2.0 * dmean * (b - a) / n + dmean * dmean;
+            // Demeaned MSE = mean(((t - mean_t) - (r - mean_r))^2)
+            //              = var_t - 2*cov + var_r.
+            let mse_dm = (var_t - 2.0 * cov + var_r).max(0.0);
 
             let corr = if var_r > 0.0 && var_t > 0.0 {
                 (cov / (var_r.sqrt() * var_t.sqrt())).clamp(-1.0, 1.0)
@@ -523,7 +524,7 @@ fn compute_r2d2_kernel_sat(
             VoxelResult {
                 idx: x * ny * nz + y * nz + z,
                 mi: mi_raw,
-                mse: mse_raw.max(0.0),
+                mse: mse_dm,
                 corr,
             }
         })

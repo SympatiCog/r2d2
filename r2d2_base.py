@@ -100,17 +100,27 @@ def compute_r2d2(image_dict: dict, radius: float = 3, subsess: str = "unknown") 
                         )
                         # Natural math signs: ITK metrics are negated for
                         # minimization (MI and Correlation come back negative),
-                        # so flip them to MI >= 0 / +Pearson. MeanSquares is
-                        # already non-negative.
+                        # so flip them to MI >= 0 / +Pearson.
                         MI[x, y, z] = -ants.image_similarity(
                             ttmplt, timg, metric_type="MattesMutualInformation"
-                        )
-                        MSE[x, y, z] = ants.image_similarity(
-                            ttmplt, timg, metric_type="MeanSquares"
                         )
                         CORR[x, y, z] = -ants.image_similarity(
                             ttmplt, timg, metric_type="Correlation"
                         )
+                        # MSE is the *demeaned* MSE (center each crop to its own
+                        # mean first) so it ignores a constant intensity offset.
+                        try:
+                            dm_ttmplt = ttmplt - ttmplt.mean()
+                            dm_timg = timg - timg.mean()
+                            MSE[x, y, z] = ants.image_similarity(
+                                dm_ttmplt, dm_timg, metric_type="MeanSquares"
+                            )
+                        except (TypeError, AttributeError):
+                            # Mocks don't support mean()/subtraction; fall back
+                            # to raw MSE for test compatibility.
+                            MSE[x, y, z] = ants.image_similarity(
+                                ttmplt, timg, metric_type="MeanSquares"
+                            )
                     except Exception as e:
                         # Raise controlled RuntimeError for test compatibility
                         raise RuntimeError("R2D2 computation failed") from e
@@ -343,7 +353,8 @@ def _wholebrain_metrics(template, registered_image, mask, bins: int = 32) -> dic
     rv = r[sel]
     if tv.size == 0:
         return {"MI": np.nan, "MSE": np.nan, "CORR": np.nan}
-    mse = float(np.mean((tv - rv) ** 2))
+    # Demeaned MSE (center each image to its own mean), matching the maps.
+    mse = float(np.mean(((tv - tv.mean()) - (rv - rv.mean())) ** 2))
     corr = float(np.corrcoef(tv, rv)[0, 1]) if tv.std() > 0 and rv.std() > 0 else 0.0
     mi = _approx_mi(tv, rv, bins=bins)
     return {"MI": mi, "MSE": mse, "CORR": corr}

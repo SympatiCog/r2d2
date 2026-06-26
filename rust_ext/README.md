@@ -25,9 +25,11 @@ On top of that, the default kernel uses **summed-area tables (integral images)**
 so MSE and Correlation cost O(1) per voxel *regardless of radius* — this stacks
 with the language speedup (see "Summed-area-table kernel" below).
 
-MSE and Correlation match ANTs/numpy to floating point. MI offers two methods —
-a fast histogram approximation (default) and a faithful ITK-Mattes
-reimplementation matching `ants.image_similarity` (see "Mutual information").
+MSE is the **demeaned** MSE (each window centered to its own mean, so it ignores
+a constant intensity offset); Correlation is Pearson. Both match a numpy
+reference to floating point. MI offers two methods — a fast histogram
+approximation (default) and a faithful ITK-Mattes reimplementation (see "Mutual
+information").
 
 ## Layout
 
@@ -132,10 +134,11 @@ pytest tests/test_kernel.py -v
 
 The default kernel (`use_sat=True`) builds five 3D prefix-sum tables
 (`sum r`, `sum t`, `sum r²`, `sum t²`, `sum r·t`) once, then derives every
-window's MSE and Correlation from eight corner lookups —
+window's (demeaned) MSE and Correlation from eight corner lookups —
 O(1) per voxel instead of O(radius³). Each image is centered by its global mean
-before squaring so the variance/covariance stay numerically stable; raw MSE is
-restored exactly via a mean-difference term.
+before squaring so the variance/covariance stay numerically stable. Both metrics
+come straight from the window's variances/covariance: demeaned MSE =
+`var_t - 2·cov + var_r`, correlation = `cov / sqrt(var_t · var_r)`.
 
 MI is the one metric that can't use prefix sums (it needs the per-window joint
 histogram), so it still extracts each window when `compute_mi=True`. The SAT win
@@ -168,10 +171,10 @@ Two MI methods, selected with `mi_method`:
   moving/registered image) and ITK's `bins - 2*padding` bin layout with two
   guard bins per side.
 
-All metrics use **natural math signs**: MSE ≥ 0 (0 = identical), CORR is Pearson
-(+1 = identical), MI ≥ 0 (higher = more shared information). ITK/ANTs negate MI
-and Correlation for minimization, so the kernel's mattes MI is `-1 ×` ANTs'
-metric value.
+All metrics use **natural math signs**: MSE ≥ 0 (0 = identical, and *demeaned* —
+invariant to a constant intensity offset), CORR is Pearson (+1 = identical),
+MI ≥ 0 (higher = more shared information). ITK/ANTs negate MI and Correlation for
+minimization, so the kernel's mattes MI is `-1 ×` ANTs' metric value.
 
 ```python
 # Natural-sign MI (>= 0; higher = more similar)
