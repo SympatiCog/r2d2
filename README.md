@@ -31,6 +31,11 @@ For each voxel within the brain mask:
     * **Correlation** (CORR): Linear relationship strength
 3. Output voxelwise maps and summary statistics
 
+All metrics use natural math signs: MSE ≥ 0 (0 = identical), CORR is Pearson
+(+1 = identical), MI ≥ 0 (higher = more shared information). Note this differs
+from ITK/ANTs, which negate MI and Correlation for minimization — so MI and
+CORR maps have the opposite sign to raw `ants.image_similarity` output.
+
 This approach reveals regional registration failures that global metrics might miss, such as:
 
 * Local misalignments in specific brain regions

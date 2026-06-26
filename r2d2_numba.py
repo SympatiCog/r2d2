@@ -333,8 +333,8 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
         roi_tmplt = ants.crop_indices(template_image, lowerind=lower, upperind=upper)
 
         try:
-            # Compute MI
-            MI_arr[x, y, z] = ants.image_similarity(
+            # Compute MI (negate: ITK reports -MI, we want natural MI >= 0)
+            MI_arr[x, y, z] = -ants.image_similarity(
                 roi_tmplt, roi_reg, metric_type="MattesMutualInformation"
             )
         except Exception:
@@ -403,18 +403,56 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
         ants.image_write(v, outpath)
 
 
-def comp_stats(
-    r2d2: dict,
-    img_dict: dict,
-    metrics=["MattesMutualInformation", "MeanSquares", "Correlation"],
-) -> dict:
+def _approx_mi(a, b, bins: int = 32) -> float:
+    """Natural (non-negative) histogram mutual information between two 1-D
+    arrays, matching the kernel's approximate MI."""
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    if a.size == 0:
+        return 0.0
+    amin, amax = a.min(), a.max()
+    bmin, bmax = b.min(), b.max()
+    if amax == amin or bmax == bmin:
+        return 0.0
+    ai = np.clip(((a - amin) / (amax - amin) * (bins - 1)).astype(np.int64), 0, bins - 1)
+    bi = np.clip(((b - bmin) / (bmax - bmin) * (bins - 1)).astype(np.int64), 0, bins - 1)
+    joint = np.zeros((bins, bins), dtype=np.float64)
+    np.add.at(joint, (ai, bi), 1.0)
+    joint /= joint.sum()
+    px = joint.sum(axis=1)
+    py = joint.sum(axis=0)
+    nz = joint > 0
+    denom = np.outer(px, py)[nz]
+    return float(np.sum(joint[nz] * np.log(joint[nz] / denom)))
+
+
+def _wholebrain_metrics(template, reg_image, mask, bins: int = 32) -> dict:
+    """Whole-brain MI / MSE / CORR over the masked region in numpy (no ANTs),
+    natural signs: MSE >= 0, CORR = Pearson (+1 = identical), MI >= 0."""
+    t = np.asarray(template.numpy(), dtype=np.float64)
+    r = np.asarray(reg_image.numpy(), dtype=np.float64)
+    m = np.asarray(mask.numpy())
+    sel = m > 0
+    tv = t[sel]
+    rv = r[sel]
+    if tv.size == 0:
+        return {"MI": np.nan, "MSE": np.nan, "CORR": np.nan}
+    mse = float(np.mean((tv - rv) ** 2))
+    corr = float(np.corrcoef(tv, rv)[0, 1]) if tv.std() > 0 and rv.std() > 0 else 0.0
+    mi = _approx_mi(tv, rv, bins=bins)
+    return {"MI": mi, "MSE": mse, "CORR": corr}
+
+
+def comp_stats(r2d2: dict, img_dict: dict) -> dict:
     """
     Compute basic summary stats on images.
+
+    Per-map mean/std/z over the mask, plus whole-brain MI/MSE/CORR computed in
+    numpy (natural signs), replacing the old per-subject ANTs similarity calls.
 
     Args:
         r2d2: dictionary containing the r2d2 images
         img_dict: dictionary containing template and registered images
-        metrics: list of similarity metrics to compute on whole brain
 
     Returns:
         dictionary containing the computed stats
@@ -432,19 +470,16 @@ def comp_stats(
                 summary_stats[f"{k}_mean"] / summary_stats[f"{k}_std"]
             )
 
-        for metric in metrics:
-            summary_stats[f"{metric}_wholebrain"] = ants.image_similarity(
-                template,
-                reg_image,
-                metric_type=metric,
-            )
+        wb = _wholebrain_metrics(template, reg_image, mask)
+        for metric in ("MI", "MSE", "CORR"):
+            summary_stats[f"{metric}_wholebrain"] = wb[metric]
     except:
         for k, v in r2d2.items():
             summary_stats[f"{k}_mean"] = np.nan
             summary_stats[f"{k}_std"] = np.nan
             summary_stats[f"{k}_z"] = np.nan
 
-        for metric in metrics:
+        for metric in ("MI", "MSE", "CORR"):
             summary_stats[f"{metric}_wholebrain"] = np.nan
 
     return summary_stats

@@ -180,8 +180,10 @@ fn bspline3(t: f64) -> f64 {
 ///   - ITK's bin layout: `bin_size = range / (bins - 2*padding)` with
 ///     `padding = 2`, so two guard bins on each side keep the cubic window in
 ///     range.
-///   - Returns the ITK **metric value**, i.e. the *negative* mutual
-///     information (lower = more similar), matching `ants.image_similarity`.
+///   - Returns the **natural** (non-negative) mutual information, where higher
+///     = more similar. ITK/ANTs report the *negative* of this value (they
+///     negate MI so the metric is minimized), so this equals
+///     `-ants.image_similarity(..., "MattesMutualInformation")`.
 ///
 /// `fixed` is the template, `moving` the registered image — the same argument
 /// order as `ants.image_similarity(template, reg, ...)`.
@@ -288,8 +290,10 @@ fn mattes_mutual_information(
         }
     }
 
-    // ITK metric convention: return the negative mutual information.
-    -mi
+    // Return the natural (non-negative) mutual information. Note this is
+    // -1x ITK's MattesMutualInformation metric value (ITK negates MI so the
+    // metric is minimized). ANTs therefore reports the negative of this.
+    mi
 }
 
 /// Dispatch the per-window MI computation by method.
@@ -537,13 +541,13 @@ fn compute_r2d2_kernel_sat(
 ///     radius: neighborhood half-width (window side = 2*radius + 1)
 ///     bins:   histogram bins for MI (default 32; for "mattes" this is the
 ///             number of ITK histogram bins, must be > 4)
-///     compute_mi: if False, skip MI and return zeros for MI/dm_MI
+///     compute_mi: if False, skip MI and return zeros for MI
 ///     use_sat: if True (default), use the summed-area-table kernel — MSE/CORR
 ///              become O(1) per voxel regardless of radius. If False, use the
 ///              direct per-window kernel (handy for validation).
-///     mi_method: "approx" (default; fast positive histogram MI) or "mattes"
-///              (ITK-faithful Mattes MI, returns the negative-MI metric value
-///              matching ants.image_similarity).
+///     mi_method: "approx" (default; fast histogram MI) or "mattes"
+///              (ITK-faithful Mattes MI). Both return natural, non-negative MI
+///              (higher = more similar); this is -1x ANTs' metric value.
 ///
 /// Returns a 3-tuple of float64 arrays:
 ///     (MI, MSE, CORR)
@@ -725,8 +729,9 @@ mod tests {
 
     #[test]
     fn mattes_mi_ranks_similarity() {
-        // Identical images share maximal information -> most-negative metric;
-        // an independent pairing -> metric near zero. So identical < independent.
+        // Natural MI: identical images share maximal information -> largest
+        // positive value; an independent pairing -> near zero. So identical >
+        // independent, and both are non-negative.
         let n = 10;
         let a = Array3::from_shape_fn((n, n, n), |(i, j, k)| ((i * 3 + j * 5 + k * 7) % 11) as f64);
         let b_indep =
@@ -735,8 +740,8 @@ mod tests {
         let same = mattes_mutual_information(&a.view(), &a.view(), 16);
         let indep = mattes_mutual_information(&a.view(), &b_indep.view(), 16);
 
-        assert!(same <= 0.0, "metric should be <= 0, got {same}");
-        assert!(same < indep, "identical ({same}) should beat independent ({indep})");
+        assert!(same >= -1e-12, "MI should be non-negative, got {same}");
+        assert!(same > indep, "identical ({same}) should beat independent ({indep})");
     }
 
     #[test]

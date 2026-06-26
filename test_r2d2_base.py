@@ -201,12 +201,21 @@ class TestCompStats:
 
     def create_mock_image_dict(self, with_reg_image=True):
         """Helper to create mock image dictionary"""
-        # Create mock ANTs images with numpy array-like behavior
+        rng = np.random.default_rng(0)
+        mask_arr = np.zeros((10, 10, 10))
+        mask_arr[2:8, 2:8, 2:8] = 1
+        # mock ANTs images: __gt__ for v[mask>0], numpy() for whole-brain stats
         mock_mask = Mock()
-        mock_mask.__gt__ = Mock(return_value=np.ones((10, 10, 10), dtype=bool))
+        mock_mask.__gt__ = Mock(return_value=(mask_arr > 0))
+        mock_mask.numpy = Mock(return_value=mask_arr)
 
         mock_template = Mock()
-        mock_reg = Mock() if with_reg_image else None
+        mock_template.numpy = Mock(return_value=rng.random((10, 10, 10)))
+        if with_reg_image:
+            mock_reg = Mock()
+            mock_reg.numpy = Mock(return_value=rng.random((10, 10, 10)))
+        else:
+            mock_reg = None
 
         return {
             "template_mask": mock_mask,
@@ -241,33 +250,33 @@ class TestCompStats:
             assert f"{metric}_std" in result
             assert f"{metric}_z" in result
 
-    @patch('r2d2_base.ants.image_similarity')
-    def test_comp_stats_calculates_wholebrain_similarity(self, mock_similarity):
-        """Test that whole-brain similarity is calculated for all metrics"""
-        mock_similarity.return_value = 0.75
-
+    def test_comp_stats_calculates_wholebrain_similarity(self):
+        """Whole-brain MI/MSE/CORR are computed (in numpy, natural signs)"""
         img_dict = self.create_mock_image_dict()
         r2d2 = self.create_mock_r2d2_results()
 
         result = r2d2_base.comp_stats(r2d2, img_dict)
 
-        assert "MattesMutualInformation_wholebrain" in result
-        assert "MeanSquares_wholebrain" in result
-        assert "Correlation_wholebrain" in result
+        assert "MI_wholebrain" in result
+        assert "MSE_wholebrain" in result
+        assert "CORR_wholebrain" in result
+        # natural signs: MSE >= 0, MI >= 0, CORR in [-1, 1]
+        assert result["MSE_wholebrain"] >= 0
+        assert result["MI_wholebrain"] >= -1e-9
+        assert -1.0 <= result["CORR_wholebrain"] <= 1.0
 
-    @patch('r2d2_base.ants.image_similarity')
-    def test_comp_stats_handles_errors_gracefully(self, mock_similarity):
+    def test_comp_stats_handles_errors_gracefully(self):
         """Test that comp_stats returns NaN values on error"""
-        mock_similarity.side_effect = RuntimeError("ANTs error")
-
         img_dict = self.create_mock_image_dict()
+        # Force the whole-brain computation to fail.
+        img_dict["template_image"].numpy = Mock(side_effect=RuntimeError("boom"))
         r2d2 = self.create_mock_r2d2_results()
 
         result = r2d2_base.comp_stats(r2d2, img_dict)
 
         # Should have NaN values instead of raising
         assert np.isnan(result["MI_mean"])
-        assert np.isnan(result["MattesMutualInformation_wholebrain"])
+        assert np.isnan(result["MI_wholebrain"])
 
 
 class TestComputeR2D2:

@@ -166,12 +166,15 @@ Two MI methods, selected with `mi_method`:
   `metric_type="MattesMutualInformation"`. It uses B-spline Parzen windowing
   (zero-order for the fixed/template image, cubic spread over four bins for the
   moving/registered image) and ITK's `bins - 2*padding` bin layout with two
-  guard bins per side. Like ANTs it returns the **metric value**, i.e. the
-  *negative* mutual information (lower = more similar), so its sign is opposite
-  the approximation's.
+  guard bins per side.
+
+All metrics use **natural math signs**: MSE ≥ 0 (0 = identical), CORR is Pearson
+(+1 = identical), MI ≥ 0 (higher = more shared information). ITK/ANTs negate MI
+and Correlation for minimization, so the kernel's mattes MI is `-1 ×` ANTs'
+metric value.
 
 ```python
-# ANTs-faithful MI (negative; lower = more similar)
+# Natural-sign MI (>= 0; higher = more similar)
 MI, MSE, CORR = r2d2_rust.compute_r2d2(
     reg, tmplt, mask, radius=3, bins=50, mi_method="mattes"
 )
@@ -189,17 +192,18 @@ recomputed per window regardless of `use_sat`.
 
 `mattes_mutual_information` is checked against an independent pure-Python
 reimplementation of the same ITK algorithm (`test_mattes_matches_python_reference`,
-exact to 1e-9) and structurally (negative metric, shift-invariance, ranks
+exact to 1e-9) and structurally (non-negative MI, shift-invariance, ranks
 identical > independent).
 
 `tests/test_kernel.py` also includes an **opt-in** parity test against ANTs
 itself (`test_mattes_matches_ants_if_available`), skipped unless ANTsPy is
 installed. The kernel evaluates each window **densely**, so the apples-to-apples
-ANTs call uses `sampling_strategy="none"` at 50 bins — under which the two agree
-**to floating point** (verified: `-1.104693` vs `-1.104693`). ANTs'
-*default* `image_similarity` uses `"regular"` subsampling and so differs by a few
-percent; that's a sampling choice, not an algorithmic difference, and dense is
-the right choice for the small per-voxel windows here.
+ANTs call uses `sampling_strategy="none"` at 50 bins — under which the kernel's
+natural MI equals `-1 ×` ANTs' value **to floating point** (verified: `+1.104693`
+vs ANTs `-1.104693`). ANTs' *default* `image_similarity` uses `"regular"`
+subsampling and so differs by a few percent; that's a sampling choice, not an
+algorithmic difference, and dense is the right choice for the small per-voxel
+windows here.
 
 ## Possible next steps
 

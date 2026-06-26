@@ -140,7 +140,7 @@ def _bspline3(t):
 
 
 def _mattes_reference(fixed, moving, bins, padding=2):
-    """Pure-Python reimplementation of ITK's Mattes MI (negative MI)."""
+    """Pure-Python reimplementation of ITK's Mattes MI (natural positive MI)."""
     f = np.asarray(fixed, dtype=np.float64).ravel()
     m = np.asarray(moving, dtype=np.float64).ravel()
     if f.size == 0 or bins <= 2 * padding:
@@ -182,7 +182,8 @@ def _mattes_reference(fixed, moving, bins, padding=2):
             jpv = joint[i, j]
             if jpv > eps and mmarg[j] > eps:
                 mi += jpv * (np.log(jpv / mmarg[j]) - np.log(fmarg[i]))
-    return -mi
+    # Natural (positive) MI, matching the kernel; ITK/ANTs report -mi.
+    return mi
 
 
 def _mattes_via_kernel(fixed_win, moving_win, bins):
@@ -218,13 +219,13 @@ def test_mattes_matches_python_reference():
         assert abs(got - want) < 1e-9, f"{got} vs {want}"
 
 
-def test_mattes_is_negative_and_shift_invariant():
+def test_mattes_is_positive_and_shift_invariant():
     reg, tmplt, mask = _random_volumes(seed=5)
     MI, _, _ = r2d2_rust.compute_r2d2(
         reg, tmplt, mask, 3, bins=32, mi_method="mattes"
     )
-    # ITK convention: metric is <= 0 on the masked voxels.
-    assert np.all(MI[mask == 1] <= 1e-12)
+    # Natural convention: MI is non-negative on the masked voxels.
+    assert np.all(MI[mask == 1] >= -1e-12)
     # A per-window constant intensity shift leaves Mattes MI unchanged.
     MI_shifted, _, _ = r2d2_rust.compute_r2d2(
         np.ascontiguousarray(reg + 7.0), tmplt, mask, 3, bins=32, mi_method="mattes"
@@ -245,9 +246,11 @@ def test_mattes_matches_ants_if_available():
 
     Skipped unless ANTsPy is installed. The kernel evaluates the window densely,
     so the apples-to-apples ANTs comparison uses sampling_strategy="none" (also
-    dense) at ITK's default 50 bins. Under those settings the two agree to
-    floating point. ANTs' *default* sampling ("regular") subsamples and differs
-    by a few percent — that's a sampling choice, not an algorithmic difference.
+    dense) at ITK's default 50 bins. The kernel returns natural (positive) MI
+    while ANTs returns its negated metric value, so the kernel value equals
+    -1 * the ANTs value (agreeing to floating point). ANTs' *default* sampling
+    ("regular") subsamples and differs by a few percent — a sampling choice,
+    not an algorithmic difference.
     """
     ants = pytest.importorskip("ants")
     bins = 50  # ITK's Mattes default
@@ -264,7 +267,8 @@ def test_mattes_matches_ants_if_available():
             f_img, m_img, metric_type="MattesMutualInformation",
             sampling_strategy="none",
         )
-        assert abs(got - want) < 1e-3, f"seed={seed} kernel={got} ants={want}"
+        # Kernel is natural (+) MI; ANTs reports the negative of it.
+        assert abs(got - (-want)) < 1e-3, f"seed={seed} kernel={got} ants={want}"
 
 
 if __name__ == "__main__":

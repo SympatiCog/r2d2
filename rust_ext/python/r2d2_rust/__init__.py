@@ -46,23 +46,22 @@ def compute_r2d2_rust(
         use_sat: if True (default), use the summed-area-table kernel so MSE/CORR
             cost O(1) per voxel regardless of radius. False uses the direct
             per-window kernel (validation/reference).
-        mi_method: "approx" (default, fast positive histogram MI) or "mattes"
-            (ITK-faithful Mattes MI matching ants.image_similarity, which
-            returns the *negative* mutual information).
+        mi_method: "approx" (default, fast histogram MI) or "mattes"
+            (ITK-faithful Mattes MI). Both return natural, non-negative MI
+            (higher = more similar); this is -1x ANTs' metric value.
 
     Returns:
         dict keyed by MI, MSE, CORR; each value is an ANTsImage carrying the
         template's geometry.
 
     Note:
-        With mi_method="approx" (default), MI is the same fast histogram
-        approximation used by the Numba path (positive). With
-        mi_method="mattes", MI reproduces ITK's Mattes metric exactly and is
-        therefore negative (lower = more similar): at the default 50 bins it
-        equals ants.image_similarity(..., sampling_strategy="none") (dense)
-        to floating point. ANTs' *default* sampling ("regular") subsamples and
-        differs slightly; the per-voxel windows here are evaluated densely.
-        MSE and Correlation always match ANTs to floating point.
+        All metrics use natural math signs: MSE >= 0 (0 = identical), CORR is
+        Pearson (+1 = identical), MI >= 0 (higher = more shared information).
+        mi_method="approx" is a fast histogram MI; "mattes" reproduces ITK's
+        Mattes math but returned with the natural (positive) sign, i.e. -1x
+        ANTs' metric value. At the default 50 bins the mattes magnitude equals
+        ants.image_similarity(..., sampling_strategy="none") (dense) to floating
+        point; ANTs' default sampling ("regular") differs slightly.
     """
     import ants  # local import: kernel itself needs no ANTs
 
