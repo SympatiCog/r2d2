@@ -6,6 +6,7 @@ from multiprocess import Pool
 import ants
 import numpy as np
 import os
+import time
 from os.path import expanduser, abspath, splitext
 import pandas as pd
 import argparse
@@ -190,6 +191,32 @@ def _run_compute(
     return compute_r2d2(img_dict, radius=radius, subsess=subsess)
 
 
+class _Timed:
+    """Context manager that records elapsed wall-time into timing[name]."""
+    def __init__(self, timing: dict, name: str):
+        self.timing = timing
+        self.name = name
+
+    def __enter__(self):
+        self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        self.timing[self.name] = self.timing.get(self.name, 0.0) + (
+            time.perf_counter() - self.t0
+        )
+        return False
+
+
+class _NullTimed:
+    """No-op stand-in used when profiling is disabled."""
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def main(
     sub_folder: str,
     reg_image_name: str = "registered_t2_img.nii.gz",
@@ -197,6 +224,7 @@ def main(
     radius=3,
     backend: str = "auto",
     mi_method: str = "mattes",
+    profile: bool = False,
 ) -> dict:
     """
     Main function.
@@ -206,23 +234,36 @@ def main(
     :param template_path: path to the template
     :param backend: compute backend - "auto" (Rust if available), "rust", or "python"
     :param mi_method: Rust-backend MI - "mattes" (accurate) or "approx" (~3x faster)
+    :param profile: if True, attach a per-stage timing dict under key "_timing"
     """
     if template_path is None:
         raise ValueError("template_path is required. Please specify --template_path when running from command line.")
 
+    # When profiling, time each stage; otherwise these are no-op wrappers.
+    timing = {}
+    def _stage(name):
+        return _Timed(timing, name) if profile else _NullTimed()
+
     print(sub_folder)
-    img_dict = load_images(
-        reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
-    )
+    with _stage("load"):
+        img_dict = load_images(
+            reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
+        )
     subsess = sub_folder.split("/")[-1]
-    r2d2 = _run_compute(
-        img_dict, radius=radius, subsess=subsess, backend=backend, mi_method=mi_method
-    )
+    with _stage("compute"):
+        r2d2 = _run_compute(
+            img_dict, radius=radius, subsess=subsess, backend=backend, mi_method=mi_method
+        )
     if type(r2d2) is dict:
-        save_images(sub_folder, r2d2, radius)
+        with _stage("save"):
+            save_images(sub_folder, r2d2, radius)
         res = {"subsess": subsess}
-        comp_vals = comp_stats(r2d2, img_dict)
+        with _stage("stats"):
+            comp_vals = comp_stats(r2d2, img_dict)
         res.update(comp_vals)
+        if profile:
+            timing["total"] = sum(timing.values())
+            res["_timing"] = timing
         return res
     else:
         print(f"{subsess} failed in main()")
@@ -236,6 +277,7 @@ def main_wrapper(
     radius=3,
     backend: str = "auto",
     mi_method: str = "mattes",
+    profile: bool = False,
 ) -> dict:
     """
     Wrapper for main function that catches exceptions for parallel processing.
@@ -246,11 +288,12 @@ def main_wrapper(
     :param radius: search radius for r2d2 computation
     :param backend: compute backend - "auto", "rust", or "python"
     :param mi_method: Rust-backend MI - "mattes" or "approx"
+    :param profile: if True, attach per-stage timing
     :return: dict with success/error information
     """
     subsess = sub_folder.split("/")[-1]
     try:
-        res = main(sub_folder, reg_image_name, template_path, radius, backend, mi_method)
+        res = main(sub_folder, reg_image_name, template_path, radius, backend, mi_method, profile)
         if isinstance(res, dict):
             return res
         else:
@@ -373,6 +416,13 @@ def get_args():
         help="MI for the Rust backend: 'mattes' is ITK/ANTs-faithful (accurate); 'approx' is a fast histogram MI (~3x faster, coarser). The python backend always uses ANTs Mattes. default=mattes",
     )
 
+    parser.add_argument(
+        "--profile",
+        dest="profile",
+        action="store_true",
+        help="Time each per-subject stage (load/compute/save/stats) and print an aggregated breakdown at the end.",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -405,13 +455,40 @@ if __name__ == "__main__":
     # Create wrapper function to pass template_path
     def main_wrapper(sub_folder):
         return main(sub_folder, template_path=args.template_path, radius=args.radius,
-                    backend=args.backend, mi_method=args.mi_method)
+                    backend=args.backend, mi_method=args.mi_method, profile=args.profile)
 
+    wall_t0 = time.perf_counter()
     with Pool(args.num_python_jobs) as pool:
         res = pool.map(main_wrapper, flist)
+    wall = time.perf_counter() - wall_t0
 
     dict_data = [r for r in res if type(r) is dict]
     err_data = [r for r in res if type(r) is not dict]
+
+    # Aggregate and print per-stage timing, then strip it from the CSV output.
+    if args.profile:
+        timings = [r.pop("_timing") for r in dict_data if "_timing" in r]
+        if timings:
+            stages = ["load", "compute", "save", "stats", "total"]
+            n = len(timings)
+            print(f"\n{'='*52}")
+            print(f"Per-subject timing breakdown (mean over {n} subjects)")
+            print(f"  backend={args.backend}  mi_method={args.mi_method}  "
+                  f"jobs={args.num_python_jobs}")
+            print(f"{'='*52}")
+            print(f"{'stage':<10}{'mean (s)':>12}{'% of total':>14}")
+            print(f"{'-'*52}")
+            mean_total = sum(t.get("total", 0.0) for t in timings) / n
+            for st in stages:
+                m = sum(t.get(st, 0.0) for t in timings) / n
+                pct = (100.0 * m / mean_total) if mean_total > 0 and st != "total" else (
+                    100.0 if st == "total" else 0.0)
+                print(f"{st:<10}{m:>12.4f}{pct:>13.1f}%")
+            print(f"{'-'*52}")
+            print(f"wall-clock: {wall:.2f}s for {len(flist)} subjects "
+                  f"= {wall/max(1,len(flist)):.3f}s/subject (throughput, "
+                  f"{args.num_python_jobs}-way parallel)")
+            print(f"{'='*52}\n")
 
     dat = pd.DataFrame(dict_data)
     ts = pd.Timestamp("now")
