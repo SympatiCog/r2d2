@@ -365,6 +365,14 @@ def get_args():
     )
 
     parser.add_argument(
+        "--radius",
+        dest="radius",
+        default=3,
+        type=int,
+        help="Neighborhood search radius for the R2D2 metrics; window side = 2*radius + 1. default=3",
+    )
+
+    parser.add_argument(
         "--backend",
         dest="backend",
         default="auto",
@@ -403,7 +411,7 @@ if __name__ == "__main__":
 
     # Create wrapper function to pass template_path
     def main_wrapper(sub_folder):
-        return main(sub_folder, template_path=args.template_path, backend=args.backend)
+        return main(sub_folder, template_path=args.template_path, radius=args.radius, backend=args.backend)
 
     with Pool(args.num_python_jobs) as pool:
         res = pool.map(main_wrapper, flist)
