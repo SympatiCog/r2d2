@@ -14,8 +14,8 @@ R2D2 performs voxelwise assessment of registration quality between MRI images an
 ### Key Features
 
 * **Regional Quality Assessment**: Voxel-by-voxel registration quality evaluation
-* **Multiple Similarity Metrics**: 6 complementary metrics (MI, MSE, Correlation, and demeaned variants)
-* **High Performance**: Numba-accelerated implementation with 10-50x speedup over reference version
+* **Multiple Similarity Metrics**: 3 complementary metrics (MI, MSE, Correlation)
+* **High Performance**: Rust- and Numba-accelerated implementations over the reference version
 * **Parallel Processing**: Built-in multiprocessing support for batch processing
 * **Statistical Summaries**: Per-voxel and whole-brain statistics in CSV format
 * **Robust Error Handling**: Validated inputs, descriptive errors, graceful failure recovery
@@ -27,10 +27,16 @@ For each voxel within the brain mask:
 1. Extract a local neighborhood (radius-based ROI) from both template and registered image
 2. Compute similarity between neighborhoods using three metrics:
     * **Mattes Mutual Information** (MI): Information-theoretic similarity
-    * **Mean Squares Error** (MSE): Intensity difference
+    * **Mean Squares Error** (MSE): *Demeaned* squared difference — each
+      neighborhood is centered to its own mean first, so MSE ignores a constant
+      intensity offset and reflects structural mismatch
     * **Correlation** (CORR): Linear relationship strength
-3. Compute demeaned versions (dm\_MI, dm\_MSE, dm\_CORR) for intensity-invariant comparison
-4. Output voxelwise maps and summary statistics
+3. Output voxelwise maps and summary statistics
+
+All metrics use natural math signs: MSE ≥ 0 (0 = identical), CORR is Pearson
+(+1 = identical), MI ≥ 0 (higher = more shared information). Note this differs
+from ITK/ANTs, which negate MI and Correlation for minimization — so MI and
+CORR maps have the opposite sign to raw `ants.image_similarity` output.
 
 This approach reveals regional registration failures that global metrics might miss, such as:
 
@@ -294,9 +300,6 @@ In each subject folder:
 r2d2_MI_rad3.nii          # Mutual Information map
 r2d2_MSE_rad3.nii         # Mean Squares Error map
 r2d2_CORR_rad3.nii        # Correlation map
-r2d2_dm_MI_rad3.nii       # Demeaned MI map
-r2d2_dm_MSE_rad3.nii      # Demeaned MSE map
-r2d2_dm_CORR_rad3.nii     # Demeaned Correlation map
 ```
 
 #### Summary Statistics CSV

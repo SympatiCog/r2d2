@@ -172,14 +172,11 @@ class TestSaveImages:
             "MI": mock_image,
             "MSE": mock_image,
             "CORR": mock_image,
-            "dm_MI": mock_image,
-            "dm_MSE": mock_image,
-            "dm_CORR": mock_image
         }
 
         r2d2_base.save_images(self.test_dir, image_res, radius=5)
 
-        assert mock_write.call_count == 6
+        assert mock_write.call_count == 3
 
         # Verify correct filenames
         written_files = [call[0][1] for call in mock_write.call_args_list]
@@ -204,12 +201,21 @@ class TestCompStats:
 
     def create_mock_image_dict(self, with_reg_image=True):
         """Helper to create mock image dictionary"""
-        # Create mock ANTs images with numpy array-like behavior
+        rng = np.random.default_rng(0)
+        mask_arr = np.zeros((10, 10, 10))
+        mask_arr[2:8, 2:8, 2:8] = 1
+        # mock ANTs images: __gt__ for v[mask>0], numpy() for whole-brain stats
         mock_mask = Mock()
-        mock_mask.__gt__ = Mock(return_value=np.ones((10, 10, 10), dtype=bool))
+        mock_mask.__gt__ = Mock(return_value=(mask_arr > 0))
+        mock_mask.numpy = Mock(return_value=mask_arr)
 
         mock_template = Mock()
-        mock_reg = Mock() if with_reg_image else None
+        mock_template.numpy = Mock(return_value=rng.random((10, 10, 10)))
+        if with_reg_image:
+            mock_reg = Mock()
+            mock_reg.numpy = Mock(return_value=rng.random((10, 10, 10)))
+        else:
+            mock_reg = None
 
         return {
             "template_mask": mock_mask,
@@ -226,9 +232,6 @@ class TestCompStats:
             "MI": mock_img,
             "MSE": mock_img,
             "CORR": mock_img,
-            "dm_MI": mock_img,
-            "dm_MSE": mock_img,
-            "dm_CORR": mock_img
         }
 
     @patch('r2d2_base.ants.image_similarity')
@@ -242,38 +245,38 @@ class TestCompStats:
         result = r2d2_base.comp_stats(r2d2, img_dict)
 
         # Check that mean, std, and z are calculated for each metric
-        for metric in ["MI", "MSE", "CORR", "dm_MI", "dm_MSE", "dm_CORR"]:
+        for metric in ["MI", "MSE", "CORR"]:
             assert f"{metric}_mean" in result
             assert f"{metric}_std" in result
             assert f"{metric}_z" in result
 
-    @patch('r2d2_base.ants.image_similarity')
-    def test_comp_stats_calculates_wholebrain_similarity(self, mock_similarity):
-        """Test that whole-brain similarity is calculated for all metrics"""
-        mock_similarity.return_value = 0.75
-
+    def test_comp_stats_calculates_wholebrain_similarity(self):
+        """Whole-brain MI/MSE/CORR are computed (in numpy, natural signs)"""
         img_dict = self.create_mock_image_dict()
         r2d2 = self.create_mock_r2d2_results()
 
         result = r2d2_base.comp_stats(r2d2, img_dict)
 
-        assert "MattesMutualInformation_wholebrain" in result
-        assert "MeanSquares_wholebrain" in result
-        assert "Correlation_wholebrain" in result
+        assert "MI_wholebrain" in result
+        assert "MSE_wholebrain" in result
+        assert "CORR_wholebrain" in result
+        # natural signs: MSE >= 0, MI >= 0, CORR in [-1, 1]
+        assert result["MSE_wholebrain"] >= 0
+        assert result["MI_wholebrain"] >= -1e-9
+        assert -1.0 <= result["CORR_wholebrain"] <= 1.0
 
-    @patch('r2d2_base.ants.image_similarity')
-    def test_comp_stats_handles_errors_gracefully(self, mock_similarity):
+    def test_comp_stats_handles_errors_gracefully(self):
         """Test that comp_stats returns NaN values on error"""
-        mock_similarity.side_effect = RuntimeError("ANTs error")
-
         img_dict = self.create_mock_image_dict()
+        # Force the whole-brain computation to fail.
+        img_dict["template_image"].numpy = Mock(side_effect=RuntimeError("boom"))
         r2d2 = self.create_mock_r2d2_results()
 
         result = r2d2_base.comp_stats(r2d2, img_dict)
 
         # Should have NaN values instead of raising
         assert np.isnan(result["MI_mean"])
-        assert np.isnan(result["MattesMutualInformation_wholebrain"])
+        assert np.isnan(result["MI_wholebrain"])
 
 
 class TestComputeR2D2:
@@ -303,7 +306,7 @@ class TestComputeR2D2:
     @patch('r2d2_base.ants.crop_indices')
     @patch('r2d2_base.ants.image_similarity')
     def test_compute_r2d2_returns_all_metrics(self, mock_sim, mock_crop, mock_clone):
-        """Test that compute_r2d2 returns all 6 metric images"""
+        """Test that compute_r2d2 returns all 3 metric images"""
         # Setup mocks
         mock_img = Mock()
         mock_img.__setitem__ = Mock()
@@ -327,9 +330,9 @@ class TestComputeR2D2:
         assert "MI" in result
         assert "MSE" in result
         assert "CORR" in result
-        assert "dm_MI" in result
-        assert "dm_MSE" in result
-        assert "dm_CORR" in result
+        assert "dm_MI" not in result
+        assert "dm_MSE" not in result
+        assert "dm_CORR" not in result
 
     @patch('r2d2_base.ants.image_clone')
     @patch('r2d2_base.ants.crop_indices')
@@ -381,7 +384,11 @@ class TestMainFunction:
             template_path = os.path.join(template_dir, "template.nii.gz")
             open(template_path, 'a').close()
 
-            result = r2d2_base.main(self.sub_folder, template_path=template_path, radius=3)
+            # Force the python backend so the patched compute_r2d2 is exercised
+            # regardless of whether the Rust extension is installed.
+            result = r2d2_base.main(
+                self.sub_folder, template_path=template_path, radius=3, backend="python"
+            )
 
             assert "subsess" in result
             assert result["subsess"] == "sub-001"
@@ -389,6 +396,57 @@ class TestMainFunction:
             mock_load.assert_called_once()
             mock_compute.assert_called_once()
             mock_save.assert_called_once()
+        finally:
+            shutil.rmtree(template_dir)
+
+    @patch('r2d2_base.comp_stats')
+    @patch('r2d2_base.save_images')
+    @patch('r2d2_base.load_images')
+    def test_main_uses_rust_backend_when_selected(self, mock_load, mock_save, mock_stats):
+        """When backend='rust', main routes to compute_r2d2_rust, not compute_r2d2."""
+        reg_image_path = os.path.join(self.sub_folder, "registered_t2_img.nii.gz")
+        open(reg_image_path, 'a').close()
+
+        mock_load.return_value = {"reg_image": Mock(), "template_image": Mock(), "template_mask": Mock()}
+        mock_stats.return_value = {"MI_mean": 0.5}
+
+        template_dir = tempfile.mkdtemp()
+        try:
+            template_path = os.path.join(template_dir, "template.nii.gz")
+            open(template_path, 'a').close()
+
+            rust_mock = Mock(return_value={"MI": Mock()})
+            with patch('r2d2_base._HAVE_RUST', True), \
+                 patch('r2d2_base.compute_r2d2_rust', rust_mock), \
+                 patch('r2d2_base.compute_r2d2') as py_compute:
+                result = r2d2_base.main(
+                    self.sub_folder, template_path=template_path, radius=3, backend="rust"
+                )
+
+            rust_mock.assert_called_once()
+            py_compute.assert_not_called()
+            assert result["subsess"] == "sub-001"
+        finally:
+            shutil.rmtree(template_dir)
+
+    @patch('r2d2_base.load_images')
+    def test_main_rust_backend_errors_when_unavailable(self, mock_load):
+        """backend='rust' without the extension installed raises a clear error."""
+        reg_image_path = os.path.join(self.sub_folder, "registered_t2_img.nii.gz")
+        open(reg_image_path, 'a').close()
+        mock_load.return_value = {"reg_image": Mock(), "template_image": Mock(), "template_mask": Mock()}
+
+        template_dir = tempfile.mkdtemp()
+        try:
+            template_path = os.path.join(template_dir, "template.nii.gz")
+            open(template_path, 'a').close()
+
+            with patch('r2d2_base._HAVE_RUST', False), \
+                 patch('r2d2_base.compute_r2d2_rust', None):
+                with pytest.raises(RuntimeError, match="r2d2_rust"):
+                    r2d2_base.main(
+                        self.sub_folder, template_path=template_path, backend="rust"
+                    )
         finally:
             shutil.rmtree(template_dir)
 

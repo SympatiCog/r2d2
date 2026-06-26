@@ -1,0 +1,23 @@
+# Allow `cargo test` / `cargo build` to link on macOS while the pyo3
+# "extension-module" feature is enabled. That feature deliberately does NOT
+# link libpython, so the Python C-API symbols are undefined at link time. On
+# Linux the linker permits undefined symbols in a shared object; macOS's linker
+# does not, and fails with "Undefined symbols ... _Py...".
+#
+# `-undefined dynamic_lookup` tells the macOS linker to resolve those symbols at
+# load time from the host interpreter. The pure-Rust unit tests never call into
+# Python, so the test binary links and runs cleanly. maturin applies the same
+# flags when building wheels on macOS, so this matches the packaged build.
+#
+# These sections are macOS-only; Linux/Windows targets ignore them.
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
+]

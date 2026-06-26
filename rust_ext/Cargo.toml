@@ -1,0 +1,26 @@
+[package]
+name = "r2d2_rust"
+version = "0.1.0"
+edition = "2021"
+authors = ["SympatiCog"]
+description = "Rust-accelerated voxelwise R2D2 registration-mismatch metrics"
+license = "Apache-2.0"
+
+[lib]
+name = "r2d2_rust"
+# cdylib is what Python loads; rlib lets the kernel be unit-tested in pure Rust.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# PyO3 0.22 with the extension-module feature so we don't link libpython.
+pyo3 = { version = "0.22", features = ["extension-module"] }
+# rust-numpy matched to the same PyO3 series for zero-copy ndarray <-> numpy.
+numpy = "0.22"
+ndarray = { version = "0.16", features = ["rayon"] }
+rayon = "1.10"
+
+[profile.release]
+# Favor a fast kernel; these are cheap wins for tight numeric loops.
+opt-level = 3
+lto = "thin"
+codegen-units = 1

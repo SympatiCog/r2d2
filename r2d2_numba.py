@@ -17,6 +17,15 @@ import numba
 from numba import jit, prange
 import re
 
+# Optional Rust-accelerated backend. Falls back to the Numba kernel below if
+# the r2d2_rust extension isn't installed.
+try:
+    from r2d2_rust import compute_r2d2_rust
+    _HAVE_RUST = True
+except ImportError:
+    compute_r2d2_rust = None
+    _HAVE_RUST = False
+
 # Lazy import for ANTs - only check when actually running (not for --help)
 ants = None
 
@@ -180,7 +189,7 @@ def compute_r2d2_kernel(
         compute_mi: Whether to compute MI (slower) or skip it
 
     Returns:
-        Tuple of 6 numpy arrays: (MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR)
+        Tuple of 3 numpy arrays: (MI, MSE, CORR)
     """
     X, Y, Z = tmplt_arr.shape
 
@@ -188,9 +197,6 @@ def compute_r2d2_kernel(
     MI = np.zeros((X, Y, Z), dtype=np.float64)
     MSE = np.zeros((X, Y, Z), dtype=np.float64)
     CORR = np.zeros((X, Y, Z), dtype=np.float64)
-    dm_MI = np.zeros((X, Y, Z), dtype=np.float64)
-    dm_MSE = np.zeros((X, Y, Z), dtype=np.float64)
-    dm_CORR = np.zeros((X, Y, Z), dtype=np.float64)
 
     # Parallel loop over x dimension
     for x in prange(X):
@@ -212,26 +218,16 @@ def compute_r2d2_kernel(
                 roi_reg = reg_arr[x_min:x_max, y_min:y_max, z_min:z_max]
                 roi_tmplt = tmplt_arr[x_min:x_max, y_min:y_max, z_min:z_max]
 
-                # Compute raw metrics
+                # Compute metrics. MSE is the *demeaned* MSE (each window
+                # centered to its own mean), so it ignores a constant offset.
                 if compute_mi:
                     MI[x, y, z] = compute_mutual_information_approx(roi_tmplt, roi_reg)
-                MSE[x, y, z] = compute_mse(roi_tmplt, roi_reg)
+                MSE[x, y, z] = compute_mse(
+                    roi_tmplt - np.mean(roi_tmplt), roi_reg - np.mean(roi_reg)
+                )
                 CORR[x, y, z] = compute_correlation(roi_tmplt, roi_reg)
 
-                # Compute demeaned ROIs
-                roi_reg_mean = np.mean(roi_reg)
-                roi_tmplt_mean = np.mean(roi_tmplt)
-
-                dm_roi_reg = roi_reg - roi_reg_mean
-                dm_roi_tmplt = roi_tmplt - roi_tmplt_mean
-
-                # Compute demeaned metrics
-                if compute_mi:
-                    dm_MI[x, y, z] = compute_mutual_information_approx(dm_roi_tmplt, dm_roi_reg)
-                dm_MSE[x, y, z] = compute_mse(dm_roi_tmplt, dm_roi_reg)
-                dm_CORR[x, y, z] = compute_correlation(dm_roi_tmplt, dm_roi_reg)
-
-    return MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR
+    return MI, MSE, CORR
 
 
 def compute_r2d2_numba(
@@ -253,7 +249,7 @@ def compute_r2d2_numba(
         use_numba_mi: If True, use Numba's approximate MI. If False, use ANTs MI (slower but more accurate)
 
     Returns:
-        Dictionary with keys: MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR
+        Dictionary with keys: MI, MSE, CORR
         Each value is an ANTsImage
     """
     template_image = image_dict.get("template_image")
@@ -267,7 +263,7 @@ def compute_r2d2_numba(
 
     try:
         # Call Numba-accelerated kernel
-        MI_arr, MSE_arr, CORR_arr, dm_MI_arr, dm_MSE_arr, dm_CORR_arr = compute_r2d2_kernel(
+        MI_arr, MSE_arr, CORR_arr = compute_r2d2_kernel(
             reg_arr,
             tmplt_arr,
             mask_arr,
@@ -279,7 +275,7 @@ def compute_r2d2_numba(
         # This hybrid approach uses Numba for fast metrics and ANTs for accurate MI
         if not use_numba_mi:
             print(f"  Computing MI with ANTs (more accurate, slower)...")
-            MI_arr, dm_MI_arr = compute_mi_with_ants(
+            MI_arr = compute_mi_with_ants(
                 reg_image, template_image, template_mask, radius
             )
 
@@ -293,23 +289,11 @@ def compute_r2d2_numba(
         CORR = ants.from_numpy(CORR_arr, origin=template_image.origin,
                               spacing=template_image.spacing,
                               direction=template_image.direction)
-        dm_MI = ants.from_numpy(dm_MI_arr, origin=template_image.origin,
-                                spacing=template_image.spacing,
-                                direction=template_image.direction)
-        dm_MSE = ants.from_numpy(dm_MSE_arr, origin=template_image.origin,
-                                 spacing=template_image.spacing,
-                                 direction=template_image.direction)
-        dm_CORR = ants.from_numpy(dm_CORR_arr, origin=template_image.origin,
-                                  spacing=template_image.spacing,
-                                  direction=template_image.direction)
 
         results_dict = {
             "MI": MI,
             "MSE": MSE,
             "CORR": CORR,
-            "dm_MI": dm_MI,
-            "dm_MSE": dm_MSE,
-            "dm_CORR": dm_CORR,
         }
 
         return results_dict
@@ -333,11 +317,10 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
         radius: ROI radius
 
     Returns:
-        Tuple of (MI_array, dm_MI_array)
+        MI_array (numpy array)
     """
     X, Y, Z = template_image.shape
     MI_arr = np.zeros((X, Y, Z))
-    dm_MI_arr = np.zeros((X, Y, Z))
 
     # Get masked coordinates to avoid iterating over all voxels
     mask_arr = template_mask.numpy()
@@ -353,21 +336,12 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
         roi_tmplt = ants.crop_indices(template_image, lowerind=lower, upperind=upper)
 
         try:
-            # Compute MI
-            MI_arr[x, y, z] = ants.image_similarity(
+            # Compute MI (negate: ITK reports -MI, we want natural MI >= 0)
+            MI_arr[x, y, z] = -ants.image_similarity(
                 roi_tmplt, roi_reg, metric_type="MattesMutualInformation"
             )
-
-            # Compute demeaned MI
-            dm_roi_reg = roi_reg - roi_reg.mean()
-            dm_roi_tmplt = roi_tmplt - roi_tmplt.mean()
-
-            dm_MI_arr[x, y, z] = ants.image_similarity(
-                dm_roi_tmplt, dm_roi_reg, metric_type="MattesMutualInformation"
-            )
-            
         except Exception:
-            # If a specific voxel still fails (e.g. ITK internal error), skip it 
+            # If a specific voxel still fails (e.g. ITK internal error), skip it
             # to prevent the entire multi-subject run from crashing.
             continue
 
@@ -375,7 +349,7 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
         if idx % 5000 == 0 and idx > 0:
             print(f"    Processed {idx}/{len(masked_coords)} masked voxels for MI")
 
-    return MI_arr, dm_MI_arr
+    return MI_arr
 
 
 # ============================================================================
@@ -432,18 +406,57 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
         ants.image_write(v, outpath)
 
 
-def comp_stats(
-    r2d2: dict,
-    img_dict: dict,
-    metrics=["MattesMutualInformation", "MeanSquares", "Correlation"],
-) -> dict:
+def _approx_mi(a, b, bins: int = 32) -> float:
+    """Natural (non-negative) histogram mutual information between two 1-D
+    arrays, matching the kernel's approximate MI."""
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    if a.size == 0:
+        return 0.0
+    amin, amax = a.min(), a.max()
+    bmin, bmax = b.min(), b.max()
+    if amax == amin or bmax == bmin:
+        return 0.0
+    ai = np.clip(((a - amin) / (amax - amin) * (bins - 1)).astype(np.int64), 0, bins - 1)
+    bi = np.clip(((b - bmin) / (bmax - bmin) * (bins - 1)).astype(np.int64), 0, bins - 1)
+    joint = np.zeros((bins, bins), dtype=np.float64)
+    np.add.at(joint, (ai, bi), 1.0)
+    joint /= joint.sum()
+    px = joint.sum(axis=1)
+    py = joint.sum(axis=0)
+    nz = joint > 0
+    denom = np.outer(px, py)[nz]
+    return float(np.sum(joint[nz] * np.log(joint[nz] / denom)))
+
+
+def _wholebrain_metrics(template, reg_image, mask, bins: int = 32) -> dict:
+    """Whole-brain MI / MSE / CORR over the masked region in numpy (no ANTs),
+    natural signs: MSE >= 0, CORR = Pearson (+1 = identical), MI >= 0."""
+    t = np.asarray(template.numpy(), dtype=np.float64)
+    r = np.asarray(reg_image.numpy(), dtype=np.float64)
+    m = np.asarray(mask.numpy())
+    sel = m > 0
+    tv = t[sel]
+    rv = r[sel]
+    if tv.size == 0:
+        return {"MI": np.nan, "MSE": np.nan, "CORR": np.nan}
+    # Demeaned MSE (center each image to its own mean), matching the maps.
+    mse = float(np.mean(((tv - tv.mean()) - (rv - rv.mean())) ** 2))
+    corr = float(np.corrcoef(tv, rv)[0, 1]) if tv.std() > 0 and rv.std() > 0 else 0.0
+    mi = _approx_mi(tv, rv, bins=bins)
+    return {"MI": mi, "MSE": mse, "CORR": corr}
+
+
+def comp_stats(r2d2: dict, img_dict: dict) -> dict:
     """
     Compute basic summary stats on images.
+
+    Per-map mean/std/z over the mask, plus whole-brain MI/MSE/CORR computed in
+    numpy (natural signs), replacing the old per-subject ANTs similarity calls.
 
     Args:
         r2d2: dictionary containing the r2d2 images
         img_dict: dictionary containing template and registered images
-        metrics: list of similarity metrics to compute on whole brain
 
     Returns:
         dictionary containing the computed stats
@@ -461,19 +474,16 @@ def comp_stats(
                 summary_stats[f"{k}_mean"] / summary_stats[f"{k}_std"]
             )
 
-        for metric in metrics:
-            summary_stats[f"{metric}_wholebrain"] = ants.image_similarity(
-                template,
-                reg_image,
-                metric_type=metric,
-            )
+        wb = _wholebrain_metrics(template, reg_image, mask)
+        for metric in ("MI", "MSE", "CORR"):
+            summary_stats[f"{metric}_wholebrain"] = wb[metric]
     except:
         for k, v in r2d2.items():
             summary_stats[f"{k}_mean"] = np.nan
             summary_stats[f"{k}_std"] = np.nan
             summary_stats[f"{k}_z"] = np.nan
 
-        for metric in metrics:
+        for metric in ("MI", "MSE", "CORR"):
             summary_stats[f"{metric}_wholebrain"] = np.nan
 
     return summary_stats
@@ -484,6 +494,7 @@ def main(
     template_path: str = None,
     radius: int = 3,
     use_numba_mi: bool = False,
+    backend: str = "auto",
 ) -> dict:
     """
     Main processing function for a single subject.
@@ -494,6 +505,7 @@ def main(
         template_path: path to the template image
         radius: ROI radius for R2D2 computation
         use_numba_mi: if True, use Numba approximate MI; if False, use ANTs MI
+        backend: "auto" (Rust extension if installed, else Numba), "rust", or "numba"
 
     Returns:
         Dictionary with subject statistics, or Exception on failure
@@ -512,10 +524,27 @@ def main(
     sub_id = m.group(0) if m else None
     subsess = sub_id
 
-    # Use Numba-accelerated version
-    r2d2 = compute_r2d2_numba(
-        img_dict, radius=radius, subsess=subsess, use_numba_mi=use_numba_mi
-    )
+    # Prefer the Rust extension when available; otherwise use the Numba kernel.
+    use_rust = backend == "rust" or (backend == "auto" and _HAVE_RUST)
+    if use_rust:
+        if compute_r2d2_rust is None:
+            raise RuntimeError(
+                "backend='rust' requested but the r2d2_rust extension is not "
+                "installed. Install it (see rust_ext/README.md) or use "
+                "backend='auto'/'numba'."
+            )
+        # mi_method="mattes" matches the ANTs/ITK MI convention used by the
+        # hybrid Numba path (use_numba_mi=False).
+        r2d2 = compute_r2d2_rust(
+            img_dict,
+            radius=radius,
+            subsess=subsess,
+            mi_method="approx" if use_numba_mi else "mattes",
+        )
+    else:
+        r2d2 = compute_r2d2_numba(
+            img_dict, radius=radius, subsess=subsess, use_numba_mi=use_numba_mi
+        )
 
     if type(r2d2) is dict:
         save_images(sub_folder, r2d2, radius)
@@ -592,6 +621,14 @@ def get_args():
         help="Path to template image file (e.g., MNI152_T1_2mm.nii.gz). Template mask must exist as {template}_mask.nii.gz",
     )
 
+    parser.add_argument(
+        "--backend",
+        dest="backend",
+        default="auto",
+        choices=["auto", "rust", "numba"],
+        help="Compute backend: 'auto' uses the Rust extension if installed else Numba; 'rust' requires it; 'numba' forces the Numba kernel. default=auto",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -635,6 +672,9 @@ if __name__ == "__main__":
     print(f"\n{'='*70}")
     print(f"R2D2 Numba-Accelerated Processing")
     print(f"{'='*70}")
+    _rust_active = args.backend in ("auto", "rust") and _HAVE_RUST
+    _backend_label = "Rust" if _rust_active else "Numba"
+    print(f"Backend: {args.backend} -> {_backend_label} (Rust extension {'available' if _HAVE_RUST else 'NOT available'})")
     print(f"Mode: {'Full Numba (approximate MI)' if args.use_numba_mi else 'Hybrid (ANTs MI + Numba MSE/CORR)'}")
     print(f"Template: {args.template_path}")
     print(f"Subjects: {len(flist)}")
@@ -649,7 +689,8 @@ if __name__ == "__main__":
             sub_folder,
             radius=args.radius,
             use_numba_mi=args.use_numba_mi,
-            template_path=args.template_path
+            template_path=args.template_path,
+            backend=args.backend,
         )
 
     with Pool(args.num_python_jobs) as pool:

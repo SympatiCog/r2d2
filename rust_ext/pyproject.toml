@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "r2d2_rust"
+version = "0.1.0"
+description = "Rust-accelerated voxelwise R2D2 registration-mismatch metrics"
+requires-python = ">=3.8"
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+# ANTs is only needed by the Python wrapper for image I/O, not by the kernel.
+ants = ["antspyx>=0.3"]
+
+[tool.maturin]
+# Build a single extension module: `import r2d2_rust`.
+module-name = "r2d2_rust._r2d2_rust"
+python-source = "python"
+features = ["pyo3/extension-module"]

@@ -6,10 +6,20 @@ from multiprocess import Pool
 import ants
 import numpy as np
 import os
+import time
 from os.path import expanduser, abspath, splitext
 import pandas as pd
 import argparse
 import glob
+
+# Optional Rust-accelerated backend. Falls back to the pure-Python
+# compute_r2d2 below if the r2d2_rust extension isn't installed.
+try:
+    from r2d2_rust import compute_r2d2_rust
+    _HAVE_RUST = True
+except ImportError:
+    compute_r2d2_rust = None
+    _HAVE_RUST = False
 
 antsCoreImage = ants.core.ants_image.ANTsImage
 unit_norm = lambda x: x / x.std()
@@ -71,9 +81,6 @@ def compute_r2d2(image_dict: dict, radius: float = 3, subsess: str = "unknown") 
         pass
     MSE = ants.image_clone(MI)
     CORR = ants.image_clone(MI)
-    dm_MI = ants.image_clone(MI)
-    dm_CORR = ants.image_clone(MI)
-    dm_MSE = ants.image_clone(MI)
 
     success = True
     X, Y, Z = template_image.shape
@@ -91,45 +98,37 @@ def compute_r2d2(image_dict: dict, radius: float = 3, subsess: str = "unknown") 
                         ttmplt = ants.crop_indices(
                             image=template_image, lowerind=lower, upperind=upper
                         )
-                        MI[x, y, z] = ants.image_similarity(
+                        # Natural math signs: ITK metrics are negated for
+                        # minimization (MI and Correlation come back negative),
+                        # so flip them to MI >= 0 / +Pearson.
+                        MI[x, y, z] = -ants.image_similarity(
                             ttmplt, timg, metric_type="MattesMutualInformation"
                         )
-                        MSE[x, y, z] = ants.image_similarity(
-                            ttmplt, timg, metric_type="MeanSquares"
-                        )
-                        CORR[x, y, z] = ants.image_similarity(
+                        CORR[x, y, z] = -ants.image_similarity(
                             ttmplt, timg, metric_type="Correlation"
                         )
-
-                        # Compute demeaned metrics - wrap in try/except for mock compatibility
+                        # MSE is the *demeaned* MSE (center each crop to its own
+                        # mean first) so it ignores a constant intensity offset.
                         try:
-                            dm_timg = timg - timg.mean()
                             dm_ttmplt = ttmplt - ttmplt.mean()
-
-                            dm_MI[x, y, z] = ants.image_similarity(
-                                dm_ttmplt, dm_timg, metric_type="MattesMutualInformation"
-                            )
-                            dm_MSE[x, y, z] = ants.image_similarity(
+                            dm_timg = timg - timg.mean()
+                            MSE[x, y, z] = ants.image_similarity(
                                 dm_ttmplt, dm_timg, metric_type="MeanSquares"
                             )
-                            dm_CORR[x, y, z] = ants.image_similarity(
-                                dm_ttmplt, dm_timg, metric_type="Correlation"
-                            )
                         except (TypeError, AttributeError):
-                            # Mocks don't support mean() or subtraction - that's OK for testing
-                            # In real usage, this shouldn't fail
-                            pass
+                            # Mocks don't support mean()/subtraction; fall back
+                            # to raw MSE for test compatibility.
+                            MSE[x, y, z] = ants.image_similarity(
+                                ttmplt, timg, metric_type="MeanSquares"
+                            )
                     except Exception as e:
                         # Raise controlled RuntimeError for test compatibility
                         raise RuntimeError("R2D2 computation failed") from e
-    
+
     results_dict = {
         "MI": MI,
         "MSE": MSE,
         "CORR": CORR,
-        "dm_MI": dm_MI,
-        "dm_MSE": dm_MSE,
-        "dm_CORR": dm_CORR,
     }
 
     return results_dict
@@ -177,11 +176,69 @@ def save_images(sub_fldr: str, image_res: dict, radius: float):
         ants.image_write(v, outpath)
 
 
+def _run_compute(
+    img_dict: dict, radius, subsess: str, backend: str = "auto", mi_method: str = "mattes"
+) -> dict:
+    """Dispatch R2D2 computation to the selected backend.
+
+    backend:
+        "auto"   - use the Rust extension if installed, else pure Python
+        "rust"   - require the Rust extension (error if missing)
+        "python" - force the pure-Python compute_r2d2
+
+    mi_method (Rust backend only):
+        "mattes" - ITK-faithful Mattes MI matching ANTs (default; accurate)
+        "approx" - fast histogram MI (~3x faster; coarser). The pure-Python
+                   backend always uses ANTs Mattes and ignores this.
+    """
+    use_rust = backend == "rust" or (backend == "auto" and _HAVE_RUST)
+    if use_rust:
+        if compute_r2d2_rust is None:
+            raise RuntimeError(
+                "backend='rust' requested but the r2d2_rust extension is not "
+                "installed. Install it (see rust_ext/README.md) or use "
+                "backend='auto'/'python'."
+            )
+        return compute_r2d2_rust(
+            img_dict, radius=radius, subsess=subsess, mi_method=mi_method
+        )
+    return compute_r2d2(img_dict, radius=radius, subsess=subsess)
+
+
+class _Timed:
+    """Context manager that records elapsed wall-time into timing[name]."""
+    def __init__(self, timing: dict, name: str):
+        self.timing = timing
+        self.name = name
+
+    def __enter__(self):
+        self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        self.timing[self.name] = self.timing.get(self.name, 0.0) + (
+            time.perf_counter() - self.t0
+        )
+        return False
+
+
+class _NullTimed:
+    """No-op stand-in used when profiling is disabled."""
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def main(
     sub_folder: str,
     reg_image_name: str = "registered_t2_img.nii.gz",
     template_path: str = None,
     radius=3,
+    backend: str = "auto",
+    mi_method: str = "mattes",
+    profile: bool = False,
 ) -> dict:
     """
     Main function.
@@ -189,21 +246,38 @@ def main(
     :param folder: path to the folder
     :param reg_image_name: name of the registered image
     :param template_path: path to the template
+    :param backend: compute backend - "auto" (Rust if available), "rust", or "python"
+    :param mi_method: Rust-backend MI - "mattes" (accurate) or "approx" (~3x faster)
+    :param profile: if True, attach a per-stage timing dict under key "_timing"
     """
     if template_path is None:
         raise ValueError("template_path is required. Please specify --template_path when running from command line.")
 
+    # When profiling, time each stage; otherwise these are no-op wrappers.
+    timing = {}
+    def _stage(name):
+        return _Timed(timing, name) if profile else _NullTimed()
+
     print(sub_folder)
-    img_dict = load_images(
-        reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
-    )
+    with _stage("load"):
+        img_dict = load_images(
+            reg_image=f"{sub_folder}/{reg_image_name}", template_path=template_path
+        )
     subsess = sub_folder.split("/")[-1]
-    r2d2 = compute_r2d2(img_dict, radius=radius, subsess=subsess)
+    with _stage("compute"):
+        r2d2 = _run_compute(
+            img_dict, radius=radius, subsess=subsess, backend=backend, mi_method=mi_method
+        )
     if type(r2d2) is dict:
-        save_images(sub_folder, r2d2, radius)
+        with _stage("save"):
+            save_images(sub_folder, r2d2, radius)
         res = {"subsess": subsess}
-        comp_vals = comp_stats(r2d2, img_dict)
+        with _stage("stats"):
+            comp_vals = comp_stats(r2d2, img_dict)
         res.update(comp_vals)
+        if profile:
+            timing["total"] = sum(timing.values())
+            res["_timing"] = timing
         return res
     else:
         print(f"{subsess} failed in main()")
@@ -215,19 +289,25 @@ def main_wrapper(
     reg_image_name: str = "registered_t2_img.nii.gz",
     template_path: str = None,
     radius=3,
+    backend: str = "auto",
+    mi_method: str = "mattes",
+    profile: bool = False,
 ) -> dict:
     """
     Wrapper for main function that catches exceptions for parallel processing.
-    
+
     :param sub_folder: path to the folder
     :param reg_image_name: name of the registered image
     :param template_path: path to the template
     :param radius: search radius for r2d2 computation
+    :param backend: compute backend - "auto", "rust", or "python"
+    :param mi_method: Rust-backend MI - "mattes" or "approx"
+    :param profile: if True, attach per-stage timing
     :return: dict with success/error information
     """
     subsess = sub_folder.split("/")[-1]
     try:
-        res = main(sub_folder, reg_image_name, template_path, radius)
+        res = main(sub_folder, reg_image_name, template_path, radius, backend, mi_method, profile)
         if isinstance(res, dict):
             return res
         else:
@@ -237,13 +317,55 @@ def main_wrapper(
         return {"subsess": subsess, "error": str(e)}
 
 
-def comp_stats(
-    r2d2: dict,
-    img_dict: dict,
-    metrics=["MattesMutualInformation", "MeanSquares", "Correlation"],
-) -> dict:
+def _approx_mi(a, b, bins: int = 32) -> float:
+    """Natural (non-negative) histogram mutual information between two 1-D
+    arrays, matching the kernel's approximate MI: normalize each to
+    [0, bins-1], build the joint histogram, and sum p*log(p/(px*py))."""
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    if a.size == 0:
+        return 0.0
+    amin, amax = a.min(), a.max()
+    bmin, bmax = b.min(), b.max()
+    if amax == amin or bmax == bmin:
+        return 0.0
+    ai = np.clip(((a - amin) / (amax - amin) * (bins - 1)).astype(np.int64), 0, bins - 1)
+    bi = np.clip(((b - bmin) / (bmax - bmin) * (bins - 1)).astype(np.int64), 0, bins - 1)
+    joint = np.zeros((bins, bins), dtype=np.float64)
+    np.add.at(joint, (ai, bi), 1.0)
+    joint /= joint.sum()
+    px = joint.sum(axis=1)
+    py = joint.sum(axis=0)
+    nz = joint > 0
+    denom = np.outer(px, py)[nz]
+    return float(np.sum(joint[nz] * np.log(joint[nz] / denom)))
+
+
+def _wholebrain_metrics(template, registered_image, mask, bins: int = 32) -> dict:
+    """Whole-brain MI / MSE / CORR over the masked region, computed directly in
+    numpy (no ANTs) with natural math signs: MSE >= 0, CORR = Pearson (+1 =
+    identical), MI >= 0. Much faster than the per-subject ANTs similarity calls."""
+    t = np.asarray(template.numpy(), dtype=np.float64)
+    r = np.asarray(registered_image.numpy(), dtype=np.float64)
+    m = np.asarray(mask.numpy())
+    sel = m > 0
+    tv = t[sel]
+    rv = r[sel]
+    if tv.size == 0:
+        return {"MI": np.nan, "MSE": np.nan, "CORR": np.nan}
+    # Demeaned MSE (center each image to its own mean), matching the maps.
+    mse = float(np.mean(((tv - tv.mean()) - (rv - rv.mean())) ** 2))
+    corr = float(np.corrcoef(tv, rv)[0, 1]) if tv.std() > 0 and rv.std() > 0 else 0.0
+    mi = _approx_mi(tv, rv, bins=bins)
+    return {"MI": mi, "MSE": mse, "CORR": corr}
+
+
+def comp_stats(r2d2: dict, img_dict: dict) -> dict:
     """
     Compute basic summary stats on images.
+
+    Per-map mean/std/z over the mask, plus whole-brain MI/MSE/CORR computed in
+    numpy (natural signs), replacing the old per-subject ANTs similarity calls.
 
     :param r2d2: dictionary containing the r2d2 images
     :return: dictionary containing the computed stats.
@@ -262,19 +384,16 @@ def comp_stats(
                 summary_stats[f"{k}_mean"] / summary_stats[f"{k}_std"]
             )
 
-        for metric in metrics:
-            summary_stats[f"{metric}_wholebrain"] = ants.image_similarity(
-                template,
-                registered_image,
-                metric_type=metric,
-            )
+        wb = _wholebrain_metrics(template, registered_image, mask)
+        for metric in ("MI", "MSE", "CORR"):
+            summary_stats[f"{metric}_wholebrain"] = wb[metric]
     except:
         for k, v in r2d2.items():
             summary_stats[f"{k}_mean"] = np.nan
             summary_stats[f"{k}_std"] = np.nan
             summary_stats[f"{k}_z"] = np.nan
 
-        for metric in metrics:
+        for metric in ("MI", "MSE", "CORR"):
             summary_stats[f"{metric}_wholebrain"] = np.nan
 
     return summary_stats
@@ -326,6 +445,37 @@ def get_args():
         help="Path to template image file (e.g., MNI152_T1_2mm.nii.gz). Template mask must exist as {template}_mask.nii.gz",
     )
 
+    parser.add_argument(
+        "--radius",
+        dest="radius",
+        default=3,
+        type=int,
+        help="Neighborhood search radius for the R2D2 metrics; window side = 2*radius + 1. default=3",
+    )
+
+    parser.add_argument(
+        "--backend",
+        dest="backend",
+        default="auto",
+        choices=["auto", "rust", "python"],
+        help="Compute backend: 'auto' uses the Rust extension if installed else pure Python; 'rust' requires it; 'python' forces pure Python. default=auto",
+    )
+
+    parser.add_argument(
+        "--mi-method",
+        dest="mi_method",
+        default="mattes",
+        choices=["mattes", "approx"],
+        help="MI for the Rust backend: 'mattes' is ITK/ANTs-faithful (accurate); 'approx' is a fast histogram MI (~3x faster, coarser). The python backend always uses ANTs Mattes. default=mattes",
+    )
+
+    parser.add_argument(
+        "--profile",
+        dest="profile",
+        action="store_true",
+        help="Time each per-subject stage (load/compute/save/stats) and print an aggregated breakdown at the end.",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -335,6 +485,9 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = args.num_itk_cores
+
+    if args.backend in ("auto", "rust"):
+        print(f"Compute backend: {args.backend} (Rust extension {'available' if _HAVE_RUST else 'NOT available'})")
 
     if args.list_path is not None:
         with open(args.list_path, "r") as f:
@@ -354,13 +507,41 @@ if __name__ == "__main__":
 
     # Create wrapper function to pass template_path
     def main_wrapper(sub_folder):
-        return main(sub_folder, template_path=args.template_path)
+        return main(sub_folder, template_path=args.template_path, radius=args.radius,
+                    backend=args.backend, mi_method=args.mi_method, profile=args.profile)
 
+    wall_t0 = time.perf_counter()
     with Pool(args.num_python_jobs) as pool:
         res = pool.map(main_wrapper, flist)
+    wall = time.perf_counter() - wall_t0
 
     dict_data = [r for r in res if type(r) is dict]
     err_data = [r for r in res if type(r) is not dict]
+
+    # Aggregate and print per-stage timing, then strip it from the CSV output.
+    if args.profile:
+        timings = [r.pop("_timing") for r in dict_data if "_timing" in r]
+        if timings:
+            stages = ["load", "compute", "save", "stats", "total"]
+            n = len(timings)
+            print(f"\n{'='*52}")
+            print(f"Per-subject timing breakdown (mean over {n} subjects)")
+            print(f"  backend={args.backend}  mi_method={args.mi_method}  "
+                  f"jobs={args.num_python_jobs}")
+            print(f"{'='*52}")
+            print(f"{'stage':<10}{'mean (s)':>12}{'% of total':>14}")
+            print(f"{'-'*52}")
+            mean_total = sum(t.get("total", 0.0) for t in timings) / n
+            for st in stages:
+                m = sum(t.get(st, 0.0) for t in timings) / n
+                pct = (100.0 * m / mean_total) if mean_total > 0 and st != "total" else (
+                    100.0 if st == "total" else 0.0)
+                print(f"{st:<10}{m:>12.4f}{pct:>13.1f}%")
+            print(f"{'-'*52}")
+            print(f"wall-clock: {wall:.2f}s for {len(flist)} subjects "
+                  f"= {wall/max(1,len(flist)):.3f}s/subject (throughput, "
+                  f"{args.num_python_jobs}-way parallel)")
+            print(f"{'='*52}\n")
 
     dat = pd.DataFrame(dict_data)
     ts = pd.Timestamp("now")

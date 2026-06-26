@@ -17,9 +17,8 @@ The codebase consists of a single module with the following pipeline:
 1. **Image Loading** (`load_images`): Loads registered image, template, and template mask
 2. **R2D2 Computation** (`compute_r2d2`): Triple-nested loop over all voxels (x, y, z)
    - For each masked voxel, crops a local neighborhood (radius-based ROI)
-   - Computes 6 similarity metrics between template and registered image:
-     - MI, MSE, CORR (raw values)
-     - dm_MI, dm_MSE, dm_CORR (demeaned values)
+   - Computes 3 similarity metrics between template and registered image:
+     - MI (natural, >=0), MSE (demeaned — each window centered first), CORR (Pearson)
    - Uses ANTs `image_similarity` with metric types: MattesMutualInformation, MeanSquares, Correlation
 3. **Statistics** (`comp_stats`): Computes mean, std, z-scores for each metric, plus whole-brain similarity
 4. **Save Results** (`save_images`): Outputs NIfTI files for each metric
@@ -37,7 +36,7 @@ Input: folder containing registered_t2_img.nii.gz
   ↓
 load_images() → {reg_image, template_image, template_mask}
   ↓
-compute_r2d2() → {MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR} images
+compute_r2d2() → {MI, MSE, CORR} images
   ↓
 save_images() → r2d2_{metric}_rad{radius}.nii files
   ↓
@@ -76,7 +75,7 @@ Each subject folder must contain:
 
 ### Outputs
 
-- Per-subject NIfTI files: `r2d2_{MI,MSE,CORR,dm_MI,dm_MSE,dm_CORR}_rad{radius}.nii`
+- Per-subject NIfTI files: `r2d2_{MI,MSE,CORR}_rad{radius}.nii`
 - Summary CSV: `r2d2_summary_stats_{timestamp}.csv`
 - Error log: `r2d2_errs_{timestamp}.txt`
 
