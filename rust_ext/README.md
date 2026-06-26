@@ -21,9 +21,10 @@ existing pipeline.
 - **True threads** — the loop runs with the GIL released via rayon, composing
   with Python-side process/thread parallelism.
 
-On top of that, the default kernel uses **summed-area tables (integral images)**
-so MSE and Correlation cost O(1) per voxel *regardless of radius* — this stacks
-with the language speedup (see "Summed-area-table kernel" below).
+On top of that, the default kernel uses **summed-area tables (SAT, a.k.a.
+integral images)** so MSE and Correlation cost O(1) per voxel *regardless of
+radius* — this stacks with the language speedup (see "Summed-area-table kernel"
+below).
 
 MSE is the **demeaned** MSE (each window centered to its own mean, so it ignores
 a constant intensity offset); Correlation is Pearson. Both match a numpy
