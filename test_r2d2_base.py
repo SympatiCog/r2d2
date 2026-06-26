@@ -172,14 +172,11 @@ class TestSaveImages:
             "MI": mock_image,
             "MSE": mock_image,
             "CORR": mock_image,
-            "dm_MI": mock_image,
-            "dm_MSE": mock_image,
-            "dm_CORR": mock_image
         }
 
         r2d2_base.save_images(self.test_dir, image_res, radius=5)
 
-        assert mock_write.call_count == 6
+        assert mock_write.call_count == 3
 
         # Verify correct filenames
         written_files = [call[0][1] for call in mock_write.call_args_list]
@@ -226,9 +223,6 @@ class TestCompStats:
             "MI": mock_img,
             "MSE": mock_img,
             "CORR": mock_img,
-            "dm_MI": mock_img,
-            "dm_MSE": mock_img,
-            "dm_CORR": mock_img
         }
 
     @patch('r2d2_base.ants.image_similarity')
@@ -242,7 +236,7 @@ class TestCompStats:
         result = r2d2_base.comp_stats(r2d2, img_dict)
 
         # Check that mean, std, and z are calculated for each metric
-        for metric in ["MI", "MSE", "CORR", "dm_MI", "dm_MSE", "dm_CORR"]:
+        for metric in ["MI", "MSE", "CORR"]:
             assert f"{metric}_mean" in result
             assert f"{metric}_std" in result
             assert f"{metric}_z" in result
@@ -303,7 +297,7 @@ class TestComputeR2D2:
     @patch('r2d2_base.ants.crop_indices')
     @patch('r2d2_base.ants.image_similarity')
     def test_compute_r2d2_returns_all_metrics(self, mock_sim, mock_crop, mock_clone):
-        """Test that compute_r2d2 returns all 6 metric images"""
+        """Test that compute_r2d2 returns all 3 metric images"""
         # Setup mocks
         mock_img = Mock()
         mock_img.__setitem__ = Mock()
@@ -327,9 +321,9 @@ class TestComputeR2D2:
         assert "MI" in result
         assert "MSE" in result
         assert "CORR" in result
-        assert "dm_MI" in result
-        assert "dm_MSE" in result
-        assert "dm_CORR" in result
+        assert "dm_MI" not in result
+        assert "dm_MSE" not in result
+        assert "dm_CORR" not in result
 
     @patch('r2d2_base.ants.image_clone')
     @patch('r2d2_base.ants.crop_indices')

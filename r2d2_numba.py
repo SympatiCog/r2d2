@@ -189,7 +189,7 @@ def compute_r2d2_kernel(
         compute_mi: Whether to compute MI (slower) or skip it
 
     Returns:
-        Tuple of 6 numpy arrays: (MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR)
+        Tuple of 3 numpy arrays: (MI, MSE, CORR)
     """
     X, Y, Z = tmplt_arr.shape
 
@@ -197,9 +197,6 @@ def compute_r2d2_kernel(
     MI = np.zeros((X, Y, Z), dtype=np.float64)
     MSE = np.zeros((X, Y, Z), dtype=np.float64)
     CORR = np.zeros((X, Y, Z), dtype=np.float64)
-    dm_MI = np.zeros((X, Y, Z), dtype=np.float64)
-    dm_MSE = np.zeros((X, Y, Z), dtype=np.float64)
-    dm_CORR = np.zeros((X, Y, Z), dtype=np.float64)
 
     # Parallel loop over x dimension
     for x in prange(X):
@@ -221,26 +218,13 @@ def compute_r2d2_kernel(
                 roi_reg = reg_arr[x_min:x_max, y_min:y_max, z_min:z_max]
                 roi_tmplt = tmplt_arr[x_min:x_max, y_min:y_max, z_min:z_max]
 
-                # Compute raw metrics
+                # Compute metrics
                 if compute_mi:
                     MI[x, y, z] = compute_mutual_information_approx(roi_tmplt, roi_reg)
                 MSE[x, y, z] = compute_mse(roi_tmplt, roi_reg)
                 CORR[x, y, z] = compute_correlation(roi_tmplt, roi_reg)
 
-                # Compute demeaned ROIs
-                roi_reg_mean = np.mean(roi_reg)
-                roi_tmplt_mean = np.mean(roi_tmplt)
-
-                dm_roi_reg = roi_reg - roi_reg_mean
-                dm_roi_tmplt = roi_tmplt - roi_tmplt_mean
-
-                # Compute demeaned metrics
-                if compute_mi:
-                    dm_MI[x, y, z] = compute_mutual_information_approx(dm_roi_tmplt, dm_roi_reg)
-                dm_MSE[x, y, z] = compute_mse(dm_roi_tmplt, dm_roi_reg)
-                dm_CORR[x, y, z] = compute_correlation(dm_roi_tmplt, dm_roi_reg)
-
-    return MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR
+    return MI, MSE, CORR
 
 
 def compute_r2d2_numba(
@@ -262,7 +246,7 @@ def compute_r2d2_numba(
         use_numba_mi: If True, use Numba's approximate MI. If False, use ANTs MI (slower but more accurate)
 
     Returns:
-        Dictionary with keys: MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR
+        Dictionary with keys: MI, MSE, CORR
         Each value is an ANTsImage
     """
     template_image = image_dict.get("template_image")
@@ -276,7 +260,7 @@ def compute_r2d2_numba(
 
     try:
         # Call Numba-accelerated kernel
-        MI_arr, MSE_arr, CORR_arr, dm_MI_arr, dm_MSE_arr, dm_CORR_arr = compute_r2d2_kernel(
+        MI_arr, MSE_arr, CORR_arr = compute_r2d2_kernel(
             reg_arr,
             tmplt_arr,
             mask_arr,
@@ -288,7 +272,7 @@ def compute_r2d2_numba(
         # This hybrid approach uses Numba for fast metrics and ANTs for accurate MI
         if not use_numba_mi:
             print(f"  Computing MI with ANTs (more accurate, slower)...")
-            MI_arr, dm_MI_arr = compute_mi_with_ants(
+            MI_arr = compute_mi_with_ants(
                 reg_image, template_image, template_mask, radius
             )
 
@@ -302,23 +286,11 @@ def compute_r2d2_numba(
         CORR = ants.from_numpy(CORR_arr, origin=template_image.origin,
                               spacing=template_image.spacing,
                               direction=template_image.direction)
-        dm_MI = ants.from_numpy(dm_MI_arr, origin=template_image.origin,
-                                spacing=template_image.spacing,
-                                direction=template_image.direction)
-        dm_MSE = ants.from_numpy(dm_MSE_arr, origin=template_image.origin,
-                                 spacing=template_image.spacing,
-                                 direction=template_image.direction)
-        dm_CORR = ants.from_numpy(dm_CORR_arr, origin=template_image.origin,
-                                  spacing=template_image.spacing,
-                                  direction=template_image.direction)
 
         results_dict = {
             "MI": MI,
             "MSE": MSE,
             "CORR": CORR,
-            "dm_MI": dm_MI,
-            "dm_MSE": dm_MSE,
-            "dm_CORR": dm_CORR,
         }
 
         return results_dict
@@ -342,11 +314,10 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
         radius: ROI radius
 
     Returns:
-        Tuple of (MI_array, dm_MI_array)
+        MI_array (numpy array)
     """
     X, Y, Z = template_image.shape
     MI_arr = np.zeros((X, Y, Z))
-    dm_MI_arr = np.zeros((X, Y, Z))
 
     # Get masked coordinates to avoid iterating over all voxels
     mask_arr = template_mask.numpy()
@@ -366,17 +337,8 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
             MI_arr[x, y, z] = ants.image_similarity(
                 roi_tmplt, roi_reg, metric_type="MattesMutualInformation"
             )
-
-            # Compute demeaned MI
-            dm_roi_reg = roi_reg - roi_reg.mean()
-            dm_roi_tmplt = roi_tmplt - roi_tmplt.mean()
-
-            dm_MI_arr[x, y, z] = ants.image_similarity(
-                dm_roi_tmplt, dm_roi_reg, metric_type="MattesMutualInformation"
-            )
-            
         except Exception:
-            # If a specific voxel still fails (e.g. ITK internal error), skip it 
+            # If a specific voxel still fails (e.g. ITK internal error), skip it
             # to prevent the entire multi-subject run from crashing.
             continue
 
@@ -384,7 +346,7 @@ def compute_mi_with_ants(reg_image, template_image, template_mask, radius):
         if idx % 5000 == 0 and idx > 0:
             print(f"    Processed {idx}/{len(masked_coords)} masked voxels for MI")
 
-    return MI_arr, dm_MI_arr
+    return MI_arr
 
 
 # ============================================================================

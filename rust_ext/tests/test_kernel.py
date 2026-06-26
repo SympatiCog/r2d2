@@ -6,7 +6,7 @@ Run after building/installing the extension (e.g. `maturin develop --release`):
 
 MSE and Correlation must match the reference to floating-point tolerance.
 MI uses a histogram approximation, so it is only sanity-checked (finite,
-non-negative, and identical between the raw and demeaned variants).
+non-negative).
 """
 
 import numpy as np
@@ -20,7 +20,6 @@ def _reference(reg, tmplt, mask, radius):
     nx, ny, nz = reg.shape
     mse = np.zeros_like(reg)
     corr = np.zeros_like(reg)
-    dm_mse = np.zeros_like(reg)
     coords = np.argwhere(mask == 1)
     for x, y, z in coords:
         x0, x1 = max(0, x - radius), min(nx, x + radius + 1)
@@ -29,10 +28,9 @@ def _reference(reg, tmplt, mask, radius):
         wr = reg[x0:x1, y0:y1, z0:z1].ravel()
         wt = tmplt[x0:x1, y0:y1, z0:z1].ravel()
         mse[x, y, z] = np.mean((wt - wr) ** 2)
-        dm_mse[x, y, z] = np.mean(((wt - wt.mean()) - (wr - wr.mean())) ** 2)
         if wt.std() > 0 and wr.std() > 0:
             corr[x, y, z] = np.corrcoef(wt, wr)[0, 1]
-    return mse, corr, dm_mse
+    return mse, corr
 
 
 def _random_volumes(shape=(20, 18, 16), seed=0):
@@ -53,15 +51,14 @@ def _random_volumes(shape=(20, 18, 16), seed=0):
 def test_mse_and_corr_match_reference(use_sat):
     reg, tmplt, mask = _random_volumes()
     radius = 3
-    MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
+    MI, MSE, CORR = r2d2_rust.compute_r2d2(
         reg, tmplt, mask, radius, use_sat=use_sat
     )
-    ref_mse, ref_corr, ref_dm_mse = _reference(reg, tmplt, mask, radius)
+    ref_mse, ref_corr = _reference(reg, tmplt, mask, radius)
 
     # The SAT kernel sums in a different order, so allow a slightly looser tol.
     atol = 1e-8 if use_sat else 1e-10
     np.testing.assert_allclose(MSE, ref_mse, atol=atol)
-    np.testing.assert_allclose(dm_MSE, ref_dm_mse, atol=atol)
     np.testing.assert_allclose(CORR, ref_corr, atol=atol)
 
 
@@ -80,36 +77,35 @@ def test_sat_radius_independence():
     whole volume (every window is the full image)."""
     reg, tmplt, mask = _random_volumes(shape=(10, 10, 10), seed=9)
     big_r = 50  # larger than the volume -> every window is the entire image
-    _, MSE, CORR, _, _, _ = r2d2_rust.compute_r2d2(reg, tmplt, mask, big_r)
-    ref_mse, ref_corr, _ = _reference(reg, tmplt, mask, big_r)
+    _, MSE, CORR = r2d2_rust.compute_r2d2(reg, tmplt, mask, big_r)
+    ref_mse, ref_corr = _reference(reg, tmplt, mask, big_r)
     np.testing.assert_allclose(MSE, ref_mse, atol=1e-8)
     np.testing.assert_allclose(CORR, ref_corr, atol=1e-8)
 
 
 def test_corr_is_shift_invariant():
+    # Correlation is invariant to a constant intensity shift of either image.
     reg, tmplt, mask = _random_volumes(seed=1)
-    _, _, CORR, _, _, dm_CORR = r2d2_rust.compute_r2d2(reg, tmplt, mask, 2)
-    # Correlation is invariant to a constant shift, so the demeaned variant
-    # equals the raw one.
-    np.testing.assert_allclose(CORR, dm_CORR, atol=1e-12)
+    _, _, CORR = r2d2_rust.compute_r2d2(reg, tmplt, mask, 2)
+    _, _, CORR_shifted = r2d2_rust.compute_r2d2(
+        np.ascontiguousarray(reg + 5.0), tmplt, mask, 2
+    )
+    np.testing.assert_allclose(CORR, CORR_shifted, atol=1e-10)
 
 
 def test_mi_is_finite_and_nonnegative():
     reg, tmplt, mask = _random_volumes(seed=2)
-    MI, _, _, dm_MI, _, _ = r2d2_rust.compute_r2d2(reg, tmplt, mask, 3, bins=16)
+    MI, _, _ = r2d2_rust.compute_r2d2(reg, tmplt, mask, 3, bins=16)
     assert np.all(np.isfinite(MI))
     assert np.all(MI >= -1e-12)
-    # Approx-MI is shift-invariant in this implementation.
-    np.testing.assert_allclose(MI, dm_MI, atol=1e-12)
 
 
 def test_compute_mi_false_zeros_mi():
     reg, tmplt, mask = _random_volumes(seed=3)
-    MI, MSE, _, dm_MI, _, _ = r2d2_rust.compute_r2d2(
+    MI, MSE, _ = r2d2_rust.compute_r2d2(
         reg, tmplt, mask, 2, compute_mi=False
     )
     assert np.all(MI == 0.0)
-    assert np.all(dm_MI == 0.0)
     assert np.any(MSE != 0.0)  # other metrics still computed
 
 
@@ -224,13 +220,16 @@ def test_mattes_matches_python_reference():
 
 def test_mattes_is_negative_and_shift_invariant():
     reg, tmplt, mask = _random_volumes(seed=5)
-    MI, _, _, dm_MI, _, _ = r2d2_rust.compute_r2d2(
+    MI, _, _ = r2d2_rust.compute_r2d2(
         reg, tmplt, mask, 3, bins=32, mi_method="mattes"
     )
     # ITK convention: metric is <= 0 on the masked voxels.
     assert np.all(MI[mask == 1] <= 1e-12)
-    # Demeaning is a per-window constant shift -> Mattes MI unchanged.
-    np.testing.assert_allclose(MI, dm_MI, atol=1e-12)
+    # A per-window constant intensity shift leaves Mattes MI unchanged.
+    MI_shifted, _, _ = r2d2_rust.compute_r2d2(
+        np.ascontiguousarray(reg + 7.0), tmplt, mask, 3, bins=32, mi_method="mattes"
+    )
+    np.testing.assert_allclose(MI, MI_shifted, atol=1e-9)
 
 
 @pytest.mark.parametrize("use_sat", [True, False])
@@ -271,9 +270,8 @@ def test_mattes_matches_ants_if_available():
 if __name__ == "__main__":
     # Allow running without pytest.
     reg, tmplt, mask = _random_volumes()
-    MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(reg, tmplt, mask, 3)
-    ref_mse, ref_corr, ref_dm_mse = _reference(reg, tmplt, mask, 3)
+    MI, MSE, CORR = r2d2_rust.compute_r2d2(reg, tmplt, mask, 3)
+    ref_mse, ref_corr = _reference(reg, tmplt, mask, 3)
     print("MSE  max abs diff:", np.abs(MSE - ref_mse).max())
     print("CORR max abs diff:", np.abs(CORR - ref_corr).max())
-    print("dm_MSE max abs diff:", np.abs(dm_MSE - ref_dm_mse).max())
     print("OK")

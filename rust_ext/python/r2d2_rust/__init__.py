@@ -10,9 +10,7 @@ numpy arrays. This package adds a thin, ANTs-aware wrapper
 It can also be used array-in/array-out, with no ANTs dependency at all:
 
     import numpy as np, r2d2_rust
-    MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
-        reg_arr, tmplt_arr, mask_arr, radius=3
-    )
+    MI, MSE, CORR = r2d2_rust.compute_r2d2(reg_arr, tmplt_arr, mask_arr, radius=3)
 """
 
 import numpy as np
@@ -21,7 +19,7 @@ from ._r2d2_rust import compute_r2d2  # noqa: F401  (re-exported low-level kerne
 
 __all__ = ["compute_r2d2", "compute_r2d2_rust"]
 
-_KEYS = ("MI", "MSE", "CORR", "dm_MI", "dm_MSE", "dm_CORR")
+_KEYS = ("MI", "MSE", "CORR")
 
 
 def compute_r2d2_rust(
@@ -44,7 +42,7 @@ def compute_r2d2_rust(
         subsess: subject/session id, used only in error messages.
         bins: number of histogram bins for MI. Defaults to 50 for
             mi_method="mattes" (ITK's default) and 32 for "approx".
-        compute_mi: if False, MI / dm_MI come back as zeros (cheaper).
+        compute_mi: if False, MI comes back as zeros (cheaper).
         use_sat: if True (default), use the summed-area-table kernel so MSE/CORR
             cost O(1) per voxel regardless of radius. False uses the direct
             per-window kernel (validation/reference).
@@ -53,8 +51,8 @@ def compute_r2d2_rust(
             returns the *negative* mutual information).
 
     Returns:
-        dict keyed by MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR; each value is an
-        ANTsImage carrying the template's geometry.
+        dict keyed by MI, MSE, CORR; each value is an ANTsImage carrying the
+        template's geometry.
 
     Note:
         With mi_method="approx" (default), MI is the same fast histogram

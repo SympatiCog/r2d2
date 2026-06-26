@@ -67,7 +67,7 @@ Array-in / array-out (no ANTs):
 ```python
 import numpy as np, r2d2_rust
 # reg/tmplt/mask are 3D float64 numpy arrays of identical shape
-MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
+MI, MSE, CORR = r2d2_rust.compute_r2d2(
     reg, tmplt, mask, radius=3, bins=32, compute_mi=True, use_sat=True
 )
 ```
@@ -111,7 +111,7 @@ pytest tests/test_kernel.py -v
 
 The default kernel (`use_sat=True`) builds five 3D prefix-sum tables
 (`sum r`, `sum t`, `sum r²`, `sum t²`, `sum r·t`) once, then derives every
-window's MSE, Correlation, and demeaned variants from eight corner lookups —
+window's MSE and Correlation from eight corner lookups —
 O(1) per voxel instead of O(radius³). Each image is centered by its global mean
 before squaring so the variance/covariance stay numerically stable; raw MSE is
 restored exactly via a mean-difference term.
@@ -151,12 +151,12 @@ Two MI methods, selected with `mi_method`:
 
 ```python
 # ANTs-faithful MI (negative; lower = more similar)
-MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR = r2d2_rust.compute_r2d2(
+MI, MSE, CORR = r2d2_rust.compute_r2d2(
     reg, tmplt, mask, radius=3, bins=50, mi_method="mattes"
 )
 ```
 
-Both methods are shift-invariant per window, so `dm_MI == MI`.
+Both MI methods are shift-invariant per window.
 
 `bins` is the number of histogram bins (must be > 4 for `"mattes"` — two guard
 bins on each side). The `compute_r2d2_rust` wrapper defaults it to **50** for

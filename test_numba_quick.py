@@ -88,7 +88,7 @@ def test_numba_basic():
         return False
 
     print("\n3. Verifying output structure...")
-    expected_keys = ["MI", "MSE", "CORR", "dm_MI", "dm_MSE", "dm_CORR"]
+    expected_keys = ["MI", "MSE", "CORR"]
     for key in expected_keys:
         if key not in results:
             print(f"   ✗ Missing key: {key}")
@@ -99,7 +99,7 @@ def test_numba_basic():
     print(f"   ✓ All {len(expected_keys)} metrics present with correct shape")
 
     print("\n4. Checking output values...")
-    for key in ["MSE", "CORR", "dm_MSE", "dm_CORR"]:
+    for key in ["MSE", "CORR"]:
         arr = results[key].numpy()
         non_zero = arr[mask_arr > 0]
 

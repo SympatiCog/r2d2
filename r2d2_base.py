@@ -80,9 +80,6 @@ def compute_r2d2(image_dict: dict, radius: float = 3, subsess: str = "unknown") 
         pass
     MSE = ants.image_clone(MI)
     CORR = ants.image_clone(MI)
-    dm_MI = ants.image_clone(MI)
-    dm_CORR = ants.image_clone(MI)
-    dm_MSE = ants.image_clone(MI)
 
     success = True
     X, Y, Z = template_image.shape
@@ -109,36 +106,14 @@ def compute_r2d2(image_dict: dict, radius: float = 3, subsess: str = "unknown") 
                         CORR[x, y, z] = ants.image_similarity(
                             ttmplt, timg, metric_type="Correlation"
                         )
-
-                        # Compute demeaned metrics - wrap in try/except for mock compatibility
-                        try:
-                            dm_timg = timg - timg.mean()
-                            dm_ttmplt = ttmplt - ttmplt.mean()
-
-                            dm_MI[x, y, z] = ants.image_similarity(
-                                dm_ttmplt, dm_timg, metric_type="MattesMutualInformation"
-                            )
-                            dm_MSE[x, y, z] = ants.image_similarity(
-                                dm_ttmplt, dm_timg, metric_type="MeanSquares"
-                            )
-                            dm_CORR[x, y, z] = ants.image_similarity(
-                                dm_ttmplt, dm_timg, metric_type="Correlation"
-                            )
-                        except (TypeError, AttributeError):
-                            # Mocks don't support mean() or subtraction - that's OK for testing
-                            # In real usage, this shouldn't fail
-                            pass
                     except Exception as e:
                         # Raise controlled RuntimeError for test compatibility
                         raise RuntimeError("R2D2 computation failed") from e
-    
+
     results_dict = {
         "MI": MI,
         "MSE": MSE,
         "CORR": CORR,
-        "dm_MI": dm_MI,
-        "dm_MSE": dm_MSE,
-        "dm_CORR": dm_CORR,
     }
 
     return results_dict

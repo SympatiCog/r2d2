@@ -233,7 +233,7 @@ results_orig = compute_r2d2(image_dict, radius=3)
 results_numba = compute_r2d2_numba(image_dict, radius=3, use_numba_mi=False)
 
 # Compare
-for key in ['MSE', 'CORR', 'dm_MSE', 'dm_CORR']:
+for key in ['MSE', 'CORR']:
     diff = np.abs(results_orig[key].numpy() - results_numba[key].numpy())
     print(f"{key}: max_diff = {diff.max()}, mean_diff = {diff.mean()}")
 ```

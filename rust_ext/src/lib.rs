@@ -15,14 +15,11 @@ use numpy::{IntoPyArray, PyArray3, PyReadonlyArray3, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-/// The six metric volumes returned for a single subject.
+/// The three metric volumes returned for a single subject.
 struct R2d2Output {
     mi: Array3<f64>,
     mse: Array3<f64>,
     corr: Array3<f64>,
-    dm_mi: Array3<f64>,
-    dm_mse: Array3<f64>,
-    dm_corr: Array3<f64>,
 }
 
 /// Per-voxel result, scattered back into the output volumes after the parallel
@@ -32,9 +29,6 @@ struct VoxelResult {
     mi: f64,
     mse: f64,
     corr: f64,
-    dm_mi: f64,
-    dm_mse: f64,
-    dm_corr: f64,
 }
 
 /// Mean of (a-b)^2 over the window, with optional per-array offsets subtracted
@@ -343,7 +337,7 @@ fn compute_r2d2_kernel(
             let win_reg = reg.slice(s![x0..x1, y0..y1, z0..z1]);
             let win_tmplt = tmplt.slice(s![x0..x1, y0..y1, z0..z1]);
 
-            // Raw metrics (template vs registered, matching the Python arg order).
+            // Metrics: template vs registered, matching the Python arg order.
             let mse_raw = mse(&win_tmplt, &win_reg, 0.0, 0.0);
             let corr_raw = correlation(&win_tmplt, &win_reg);
             let mi_raw = if compute_mi {
@@ -352,19 +346,11 @@ fn compute_r2d2_kernel(
                 0.0
             };
 
-            // Demeaned metrics: MSE changes; CORR and MI are shift-invariant.
-            let mean_reg = mean(&win_reg);
-            let mean_tmplt = mean(&win_tmplt);
-            let dm_mse = mse(&win_tmplt, &win_reg, mean_tmplt, mean_reg);
-
             VoxelResult {
                 idx: x * ny * nz + y * nz + z,
                 mi: mi_raw,
                 mse: mse_raw,
                 corr: corr_raw,
-                dm_mi: mi_raw,
-                dm_mse,
-                dm_corr: corr_raw,
             }
         })
         .collect();
@@ -372,32 +358,23 @@ fn compute_r2d2_kernel(
     scatter(nx, ny, nz, results)
 }
 
-/// Scatter per-voxel results into six zero-initialized volumes. Shared by both
+/// Scatter per-voxel results into three zero-initialized volumes. Shared by both
 /// the direct and summed-area-table kernels.
 fn scatter(nx: usize, ny: usize, nz: usize, results: Vec<VoxelResult>) -> R2d2Output {
     let mut out = R2d2Output {
         mi: Array3::zeros((nx, ny, nz)),
         mse: Array3::zeros((nx, ny, nz)),
         corr: Array3::zeros((nx, ny, nz)),
-        dm_mi: Array3::zeros((nx, ny, nz)),
-        dm_mse: Array3::zeros((nx, ny, nz)),
-        dm_corr: Array3::zeros((nx, ny, nz)),
     };
 
     // Scatter back into the volumes via flat (C-order) slices.
     let mi = out.mi.as_slice_mut().unwrap();
     let mse_s = out.mse.as_slice_mut().unwrap();
     let corr = out.corr.as_slice_mut().unwrap();
-    let dm_mi = out.dm_mi.as_slice_mut().unwrap();
-    let dm_mse = out.dm_mse.as_slice_mut().unwrap();
-    let dm_corr = out.dm_corr.as_slice_mut().unwrap();
     for r in results {
         mi[r.idx] = r.mi;
         mse_s[r.idx] = r.mse;
         corr[r.idx] = r.corr;
-        dm_mi[r.idx] = r.dm_mi;
-        dm_mse[r.idx] = r.dm_mse;
-        dm_corr[r.idx] = r.dm_corr;
     }
 
     out
@@ -523,10 +500,7 @@ fn compute_r2d2_kernel_sat(
             // t - r = (t' - r') + dmean, so expand the square.
             let mse_raw =
                 (btt - 2.0 * crt + arr) / n + 2.0 * dmean * (b - a) / n + dmean * dmean;
-            // Demeaned MSE = var_t - 2*cov + var_r.
-            let dm_mse = (var_t - 2.0 * cov + var_r).max(0.0);
 
-            // Correlation is shift-invariant, so dm_corr == corr.
             let corr = if var_r > 0.0 && var_t > 0.0 {
                 (cov / (var_r.sqrt() * var_t.sqrt())).clamp(-1.0, 1.0)
             } else {
@@ -534,13 +508,12 @@ fn compute_r2d2_kernel_sat(
             };
 
             // MI still needs the actual window (no prefix-sum shortcut).
-            let (mi_raw, dm_mi) = if compute_mi {
+            let mi_raw = if compute_mi {
                 let win_reg = reg.slice(s![x0..x1, y0..y1, z0..z1]);
                 let win_tmplt = tmplt.slice(s![x0..x1, y0..y1, z0..z1]);
-                let mi = mi_window(&win_tmplt, &win_reg, bins, mattes);
-                (mi, mi)
+                mi_window(&win_tmplt, &win_reg, bins, mattes)
             } else {
-                (0.0, 0.0)
+                0.0
             };
 
             VoxelResult {
@@ -548,9 +521,6 @@ fn compute_r2d2_kernel_sat(
                 mi: mi_raw,
                 mse: mse_raw.max(0.0),
                 corr,
-                dm_mi,
-                dm_mse,
-                dm_corr: corr,
             }
         })
         .collect();
@@ -575,8 +545,8 @@ fn compute_r2d2_kernel_sat(
 ///              (ITK-faithful Mattes MI, returns the negative-MI metric value
 ///              matching ants.image_similarity).
 ///
-/// Returns a 6-tuple of float64 arrays:
-///     (MI, MSE, CORR, dm_MI, dm_MSE, dm_CORR)
+/// Returns a 3-tuple of float64 arrays:
+///     (MI, MSE, CORR)
 #[pyfunction]
 #[pyo3(signature = (reg, tmplt, mask, radius, bins=32, compute_mi=true, use_sat=true, mi_method="approx"))]
 #[allow(clippy::too_many_arguments)]
@@ -591,9 +561,6 @@ fn compute_r2d2<'py>(
     use_sat: bool,
     mi_method: &str,
 ) -> PyResult<(
-    Bound<'py, PyArray3<f64>>,
-    Bound<'py, PyArray3<f64>>,
-    Bound<'py, PyArray3<f64>>,
     Bound<'py, PyArray3<f64>>,
     Bound<'py, PyArray3<f64>>,
     Bound<'py, PyArray3<f64>>,
@@ -653,9 +620,6 @@ fn compute_r2d2<'py>(
         out.mi.into_pyarray_bound(py),
         out.mse.into_pyarray_bound(py),
         out.corr.into_pyarray_bound(py),
-        out.dm_mi.into_pyarray_bound(py),
-        out.dm_mse.into_pyarray_bound(py),
-        out.dm_corr.into_pyarray_bound(py),
     ))
 }
 
@@ -745,7 +709,6 @@ mod tests {
         // SAT computes the same MSE/CORR via prefix sums (looser tol for the
         // different summation order), and MI identically (same per-window code).
         assert!(max_diff(&sat.mse, &direct.mse) < 1e-9, "MSE mismatch");
-        assert!(max_diff(&sat.dm_mse, &direct.dm_mse) < 1e-9, "dm_MSE mismatch");
         assert!(max_diff(&sat.corr, &direct.corr) < 1e-9, "CORR mismatch");
         assert!(max_diff(&sat.mi, &direct.mi) < 1e-12, "MI mismatch");
     }

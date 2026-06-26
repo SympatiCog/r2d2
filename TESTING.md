@@ -44,7 +44,7 @@ These tests use mocking to isolate individual functions and run quickly:
   - Error handling with NaN fallback
 
 - **TestComputeR2D2** - Tests core R2D2 algorithm
-  - All 6 metrics are computed (MI, MSE, CORR, dm_*)
+  - All 3 metrics are computed (MI, MSE, CORR)
   - Proper exception handling and propagation
   - Template dimension extraction
 

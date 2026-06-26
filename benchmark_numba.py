@@ -115,7 +115,7 @@ def compare_results(results_orig, results_numba, tolerance=1e-3):
     """
     print("\nComparing results...")
 
-    metrics = ["MSE", "CORR", "dm_MSE", "dm_CORR"]
+    metrics = ["MSE", "CORR"]
     comparison = {}
 
     for metric in metrics:
